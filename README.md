@@ -1,0 +1,2 @@
+# warboss-companion
+Wargame companion
