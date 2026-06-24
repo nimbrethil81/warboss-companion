@@ -1,5 +1,5 @@
 /**
- * storage.js — localStorage wrapper
+ * storage.js — localStorage wrapper 
  *
  * Single source of truth for ALL localStorage reads and writes.
  * No other module touches localStorage directly.
@@ -13,7 +13,7 @@
  *   wbc_system_config  — cached kow.json content
  */
 
-const WBCStorage = (() => {
+window.WBCStorage = (() => {
 
   // ─── KEYS ────────────────────────────────────────────────────────────────────
   // All key strings live here. No magic strings anywhere else in this module.
@@ -208,7 +208,12 @@ const WBCStorage = (() => {
   return {
     // Key constants — exposed so other modules can reference them without
     // hardcoding strings, but cannot mutate them.
-    KEYS: Object.freeze({ ...KEYS }),
+    KEYS: Object.freeze(Object.assign({}, KEYS)),
+
+    // Primitive key-value access — used by app.js for skin and config keys
+    get,
+    set,
+    remove,
 
     // Active game
     saveActiveGame,
