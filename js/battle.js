@@ -52,6 +52,26 @@ var WBCBattle = (function () {
   /* Full sequence for reference (used by _findPhase lookups only). */
   var PHASE_ORDER = YOUR_PHASES.concat([OPP_PHASE]);
 
+  /*
+   * Round sequence — the four phases in the order they actually occur
+   * for THIS game, based on who went first. A "round" is one full
+   * cycle of both players; the turn counter should only increment
+   * once per round, at the wrap point, wherever that falls.
+   *
+   *   You first     : movement → ranged → combat → opponent_turn → (wrap)
+   *   Opponent first : opponent_turn → movement → ranged → combat → (wrap)
+   */
+  function _roundSequence() {
+    if (_game && _game.first_player === 'opponent') {
+      return [OPP_PHASE].concat(YOUR_PHASES);
+    }
+    return YOUR_PHASES.concat([OPP_PHASE]);
+  }
+
+  function _roundIndex() {
+    return _roundSequence().indexOf(_game.current_phase);
+  }
+
   /* Which stats to show on unit cards per phase.
      Values are keys on the unit object from goblins.json.
      'special_rules' is always rendered separately below the stat row. */
@@ -395,7 +415,11 @@ var WBCBattle = (function () {
       return;
     }
 
-    /* Resolve unit_ids → full unit objects from WBC.armyData (goblins.json) */
+    /* Resolve unit_ids → full unit objects from WBC.armyData (goblins.json).
+       unit_id identifies the UNIT TYPE (e.g. "goblin_rabble") and stays
+       untouched — Muster/Sheets still key off it. Duplicate entries in
+       the army (e.g. 6x Goblin Rabble) share that unit_id, so each gets
+       its own inst_id here to track routed/damage state per instance. */
     var unitIds;
     try {
       unitIds = typeof armyRecord.units === 'string'
@@ -409,6 +433,7 @@ var WBCBattle = (function () {
       var u = _findUnitInArmyData(uid);
       if (u) {
         units.push({
+          inst_id:       _uuid(),   /* unique per unit instance */
           unit_id:       u.unit_id,
           name:          u.name,
           size:          u.size,
@@ -479,8 +504,7 @@ var WBCBattle = (function () {
      * Layout (top to bottom):
      *   .battle-fixed   — never scrolls: turn header + phase display
      *                     + nav bar + prompts bar
-     *   .battle-scroll  — scrollable: roster cards + end game btn
-     *   .battle-notes   — never scrolls: notes textarea + save button
+     *   .battle-scroll  — scrollable: roster cards + notes + end game btn
      */
     page.innerHTML = [
 
@@ -545,6 +569,17 @@ var WBCBattle = (function () {
       '  <div class="battle-roster-label">Your Roster</div>',
       '  <div id="battle-roster"></div>',
 
+      /* Notes now live at the bottom of the scroll area, under the
+         roster — only visible once scrolled down, reclaiming the
+         fixed screen real estate they used to occupy. */
+      '  <div class="battle-notes-bar">',
+      '    <textarea id="battle-notes" class="battle-notes-field" rows="2"',
+      '              placeholder="Quick note for this turn…" maxlength="500"></textarea>',
+      '    <button id="battle-save-note-btn" class="battle-save-note-btn">',
+      '      Save<br>Note',
+      '    </button>',
+      '  </div>',
+
       /* End game lives at the very bottom of the scroll area */
       '  <div class="battle-end-footer">',
       '    <button id="battle-end-game-btn" class="battle-end-btn">',
@@ -553,16 +588,6 @@ var WBCBattle = (function () {
       '  </div>',
       '</div>',
       /* ── end .battle-scroll ────────────────────────────── */
-
-      /* ── Fixed notes bar ───────────────────────────────── */
-      '<div class="battle-notes-bar">',
-      '  <textarea id="battle-notes" class="battle-notes-field" rows="2"',
-      '            placeholder="Quick note for this turn…" maxlength="500"></textarea>',
-      '  <button id="battle-save-note-btn" class="battle-save-note-btn">',
-      '    Save<br>Note',
-      '  </button>',
-      '</div>',
-      /* ── end notes bar ─────────────────────────────────── */
 
       '<div id="battle-game-error" class="battle-error" style="display:none;"></div>',
 
@@ -715,16 +740,16 @@ var WBCBattle = (function () {
     /* Bind Routed / Restore buttons */
     _qsa('.unit-routed-btn', container).forEach(function (btn) {
       btn.addEventListener('click', function () {
-        _toggleRouted(this.getAttribute('data-unit-id'));
+        _toggleRouted(this.getAttribute('data-inst-id'));
       });
     });
 
     /* Bind special rules expand/collapse */
     _qsa('.unit-rules-row', container).forEach(function (row) {
       row.addEventListener('click', function () {
-        var uid   = this.getAttribute('data-unit-id');
-        var text  = _el('urules-text-' + uid);
-        var arrow = _el('urules-arrow-' + uid);
+        var instId = this.getAttribute('data-inst-id');
+        var text  = _el('urules-text-' + instId);
+        var arrow = _el('urules-arrow-' + instId);
         if (!text) return;
         var isExp = this.getAttribute('data-expanded') === 'true';
         this.setAttribute('data-expanded', isExp ? 'false' : 'true');
@@ -751,7 +776,7 @@ var WBCBattle = (function () {
     var isRouted  = u.routed;
     var label     = _escapeHtml(u.name);
     var sizeLine  = _escapeHtml((u.size || '') + (u.type ? ' · ' + u.type : ''));
-    var uid       = u.unit_id;
+    var instId    = u.inst_id;
 
     /* Contextual stats for the current phase */
     var statDefs  = PHASE_STATS[_game.current_phase] || [];
@@ -765,28 +790,30 @@ var WBCBattle = (function () {
       ].join('');
     }).join('');
 
-    /* Special rules — truncated by CSS, expands on tap */
+    /* Special rules — truncated by CSS, expands on tap.
+       Keyed by inst_id (not unit_id) so duplicate units in the roster
+       (e.g. 6x Goblin Rabble) each get their own expand state and DOM id. */
     var rules     = (u.special_rules || []).join(', ') || '—';
     var rulesHTML = [
-      '<div class="unit-rules-row" data-unit-id="' + uid + '" data-expanded="false">',
+      '<div class="unit-rules-row" data-inst-id="' + instId + '" data-expanded="false">',
       '  <span class="unit-rules-label">Rules</span>',
-      '  <span class="unit-rules-text" id="urules-text-' + uid + '">',
+      '  <span class="unit-rules-text" id="urules-text-' + instId + '">',
       _escapeHtml(rules),
       '  </span>',
-      '  <span class="unit-rules-arrow" id="urules-arrow-' + uid + '">›</span>',
+      '  <span class="unit-rules-arrow" id="urules-arrow-' + instId + '">›</span>',
       '</div>',
     ].join('');
 
     return [
       '<div class="unit-card' + (isRouted ? ' unit-card--routed' : '') + '"',
-      '     data-unit-id="' + uid + '">',
+      '     data-inst-id="' + instId + '">',
 
       '  <div class="unit-card-top">',
       '    <div class="unit-card-names">',
       '      <div class="unit-card-name">' + label + '</div>',
       '      <div class="unit-card-size">' + sizeLine + '</div>',
       '    </div>',
-      '    <button class="unit-routed-btn" data-unit-id="' + uid + '">',
+      '    <button class="unit-routed-btn" data-inst-id="' + instId + '">',
       isRouted ? 'Restore' : 'Routed',
       '    </button>',
       '  </div>',
@@ -801,10 +828,13 @@ var WBCBattle = (function () {
     ].join('');
   }
 
-  function _toggleRouted(unitId) {
+  /* Toggles the routed state of ONE unit instance (identified by inst_id).
+     Duplicate units sharing the same unit_id (e.g. 6x Goblin Rabble) are
+     tracked separately, so routing one does not affect the others. */
+  function _toggleRouted(instId) {
     if (!_game || !Array.isArray(_game.units)) return;
     _game.units = _game.units.map(function (u) {
-      if (u.unit_id === unitId) {
+      if (u.inst_id === instId) {
         return Object.assign({}, u, { routed: !u.routed });
       }
       return u;
@@ -816,49 +846,40 @@ var WBCBattle = (function () {
   /* ─── Phase / Turn navigation ────────────────────────────────────── */
 
   /*
-   * Turn structure:
-   *   Your block  : movement → ranged → combat   (YOUR_PHASES)
-   *   Their block : opponent_turn                 (OPP_PHASE)
+   * Turn structure — order depends on who went first (_roundSequence()):
+   *   You first     : movement → ranged → combat → opponent_turn
+   *   Opponent first : opponent_turn → movement → ranged → combat
    *
-   * Next Phase steps within the current player's block, then crosses to
-   * the other player's block:
-   *   movement → ranged → combat → opponent_turn → (next turn) movement …
+   * A "round" is one pass through that 4-phase sequence. The turn
+   * counter increments only when wrapping past the LAST phase in the
+   * sequence, whichever phase that is for this game.
    *
-   * Next Turn jumps to the START of the next player's block:
-   *   If in your phases → jump to opponent_turn (skip rest of your turn)
-   *   If in opponent_turn → increment turn, jump to movement
+   * Next Phase steps one phase at a time through the sequence, wrapping
+   * (and incrementing the turn) at the end.
    *
-   * Prev Turn jumps to the START of the previous player's block:
-   *   If in your phases → jump to opponent_turn of the previous turn
-   *   If in opponent_turn → jump to movement of the same turn (restart yours)
+   * Next Turn jumps to the START of the other player's block within the
+   * round (see _roundBlockBoundary), or to the start of the next round
+   * if already in the second block.
+   *
+   * Prev Turn is the mirror of Next Turn, stepping backward.
    */
-
-  function _isYourPhase() {
-    return YOUR_PHASES.indexOf(_game.current_phase) !== -1;
-  }
-
-  function _yourPhaseIndex() {
-    return YOUR_PHASES.indexOf(_game.current_phase);
-  }
 
   function _advancePhase() {
     if (!_game) return;
     var maxTurns = (_config && _config.max_turns) ? _config.max_turns : 7;
 
-    if (_isYourPhase()) {
-      var idx = _yourPhaseIndex();
-      if (idx < YOUR_PHASES.length - 1) {
-        _game.current_phase = YOUR_PHASES[idx + 1];
-      } else {
-        _game.current_phase = OPP_PHASE;
-      }
+    var seq = _roundSequence();
+    var idx = _roundIndex();
+
+    if (idx < seq.length - 1) {
+      _game.current_phase = seq[idx + 1];
     } else {
       if (_game.current_turn >= maxTurns) {
         _promptGameEnd();
         return;
       }
       _game.current_turn += 1;
-      _game.current_phase = YOUR_PHASES[0];
+      _game.current_phase = seq[0];
     }
 
     _saveGame();
@@ -868,36 +889,49 @@ var WBCBattle = (function () {
   function _retreatPhase() {
     if (!_game) return;
 
-    if (_isYourPhase()) {
-      var idx = _yourPhaseIndex();
-      if (idx > 0) {
-        _game.current_phase = YOUR_PHASES[idx - 1];
-      } else {
-        if (_game.current_turn <= 1) return;
-        _game.current_turn -= 1;
-        _game.current_phase = OPP_PHASE;
-      }
+    var seq = _roundSequence();
+    var idx = _roundIndex();
+
+    if (idx > 0) {
+      _game.current_phase = seq[idx - 1];
     } else {
-      _game.current_phase = YOUR_PHASES[YOUR_PHASES.length - 1];
+      if (_game.current_turn <= 1) return;
+      _game.current_turn -= 1;
+      _game.current_phase = seq[seq.length - 1];
     }
 
     _saveGame();
     _refreshGameUI();
   }
 
+  /*
+   * Index in the round sequence where the "other" player's block begins.
+   * The round always has two blocks: OPP_PHASE (1 phase) and YOUR_PHASES
+   * (3 phases) — in one order or the other depending on first_player.
+   */
+  function _roundBlockBoundary(seq) {
+    return (seq[0] === OPP_PHASE) ? 1 : seq.indexOf(OPP_PHASE);
+  }
+
   function _advanceTurn() {
     if (!_game) return;
     var maxTurns = (_config && _config.max_turns) ? _config.max_turns : 7;
 
-    if (_isYourPhase()) {
-      _game.current_phase = OPP_PHASE;
+    var seq = _roundSequence();
+    var idx = _roundIndex();
+    var k   = _roundBlockBoundary(seq);
+
+    if (idx < k) {
+      /* Still in the first block of the round — jump to the start
+         of the other player's block, same turn. */
+      _game.current_phase = seq[k];
     } else {
       if (_game.current_turn >= maxTurns) {
         _promptGameEnd();
         return;
       }
       _game.current_turn += 1;
-      _game.current_phase = YOUR_PHASES[0];
+      _game.current_phase = seq[0];
     }
 
     _saveGame();
@@ -907,12 +941,20 @@ var WBCBattle = (function () {
   function _retreatTurn() {
     if (!_game) return;
 
-    if (_isYourPhase()) {
+    var seq = _roundSequence();
+    var idx = _roundIndex();
+    var k   = _roundBlockBoundary(seq);
+
+    if (idx < k) {
+      /* In the first block of the round — jump back to the start of
+         the other player's block in the PREVIOUS round. */
       if (_game.current_turn <= 1) return;
       _game.current_turn -= 1;
-      _game.current_phase = OPP_PHASE;
+      _game.current_phase = seq[k];
     } else {
-      _game.current_phase = YOUR_PHASES[0];
+      /* In the second block — jump back to the start of the first
+         block, same turn (that block already happened this turn). */
+      _game.current_phase = seq[0];
     }
 
     _saveGame();
@@ -1113,7 +1155,12 @@ var WBCBattle = (function () {
     }
 
     var prevPhase = _el('nav-prev-phase');
-    if (prevPhase) prevPhase.addEventListener('click', _retreatPhase);
+    if (prevPhase) {
+      prevPhase.addEventListener('click', function () {
+        _saveNoteFromField();
+        _retreatPhase();
+      });
+    }
 
     var nextTurn = _el('nav-next-turn');
     if (nextTurn) {
@@ -1124,7 +1171,12 @@ var WBCBattle = (function () {
     }
 
     var prevTurn = _el('nav-prev-turn');
-    if (prevTurn) prevTurn.addEventListener('click', _retreatTurn);
+    if (prevTurn) {
+      prevTurn.addEventListener('click', function () {
+        _saveNoteFromField();
+        _retreatTurn();
+      });
+    }
 
     var saveNote = _el('battle-save-note-btn');
     if (saveNote) saveNote.addEventListener('click', _saveNoteFromField);
