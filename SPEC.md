@@ -133,17 +133,22 @@ warboss-companion/
 │   ├── muster.js           ← Muster mode logic
 │   ├── battle.js           ← Battle mode logic
 │   ├── chronicle.js        ← Chronicle mode logic
+│   ├── training.js         ← Training Ground mode logic (beta)
 │   ├── sheets.js           ← ALL Google Sheets read/write (single module)
 │   └── storage.js          ← ALL localStorage read/write (single module)
 │
 ├── data/
 │   ├── systems/
 │   │   ├── index.json      ← Manifest of all supported game systems
-│   │   └── kow.json        ← KoW turn sequence, phases, prompts, rules
+│   │   ├── kow.json        ← KoW turn sequence, phases, prompts, rules
+│   │   └── kow-training.json ← Training Ground question bank + categories (beta)
 │   └── armies/
 │       └── kow/
 │           ├── index.json  ← Manifest of all KoW factions
 │           └── goblins.json ← Goblin unit roster with stats
+│
+├── docs/
+│   └── training-categories.md ← Question-authoring reference (not shipped)
 │
 └── assets/
     └── icons/              ← PWA icons (multiple sizes)
@@ -157,6 +162,7 @@ warboss-companion/
 - `data/armies/kow/goblins.json` holds static unit reference data. This belongs in version control, not in Sheets. Sheets stores game results and reflections.
 - `data/armies/kow/index.json` is a manifest listing all available factions for KoW. The app reads this to discover armies without needing to enumerate directory contents (which browsers cannot do natively). Adding a new army means adding the file and one line to this manifest.
 - `data/systems/index.json` is a manifest listing all supported game systems. Adding a new game system means adding a new systems JSON file, a new `armies/{system}/` folder, and one line to this manifest.
+- `data/systems/kow-training.json` holds the Training Ground question bank and its category vocabulary. It is **not** part of the boot chain — `training.js` loads it lazily on first activation of the mode, and the `training_file` manifest field is optional. A missing or malformed bank degrades Training Ground to an empty/error state and cannot affect Muster, Battle, or Chronicle.
 
 ### Data Flow
 
@@ -176,6 +182,10 @@ On game end
 On Chronicle load
   └── sheets.js fetches past games from Sheets
   └── On failure → displays locally cached games with error notice
+
+On Training Ground open (first time only)
+  └── training.js lazily loads kow-training.json (resolved via index.json → training_file)
+  └── Outside the boot chain — on failure or malformed data it shows an empty/error state; core modes unaffected
 ```
 
 ### Google Sheets Schema
@@ -258,6 +268,7 @@ localStorage is the source of truth **during an active game only**. On game end,
 
 - `service-worker.js` caches `index.html`, `style.css`, all JS files, and all JSON files in `/data/`
 - The app is fully functional offline for Battle mode (no Sheets required during play)
+- The Training Ground question bank (`kow-training.json`) is precached in the shell, so the quiz works offline; if the file is ever absent, the mode degrades gracefully and the rest of the app is unaffected
 - Muster and Chronicle modes degrade gracefully — cached data is shown with a notice if Sheets is unreachable
 - On reconnection, any pending Sheets writes are retried automatically
 
@@ -451,10 +462,12 @@ Allows the app to discover all supported game systems without hardcoding them in
 ```json
 {
   "systems": [
-    { "id": "kow", "name": "Kings of War", "version": "v4", "file": "kow.json" }
+    { "id": "kow", "name": "Kings of War", "version": "v4", "file": "kow.json", "training_file": "kow-training.json" }
   ]
 }
 ```
+
+The optional `training_file` field points to a system's Training Ground question bank (see below). It is read only by `training.js`; its absence simply means that system has no Training Ground data yet, and the mode handles that gracefully.
 
 ### `data/armies/kow/index.json` — Army Manifest
 
@@ -489,7 +502,7 @@ Static reference for the Goblin army. Used in Muster to build rosters and in Bat
       "sh": "-",
       "de": "3+",
       "att": 15,
-      "ne": "14/16",
+      "ne": "16",
       "pts": 80,
       "special_rules": ["Rabble"],
       "traits": ["Goblin"]
@@ -499,6 +512,48 @@ Static reference for the Goblin army. Used in Muster to build rosters and in Bat
 ```
 
 > **Note:** Unit roster to be completed. Stats taken from the official Kings of War army lists. This file is reference data only — it does not duplicate anything stored in Google Sheets.
+
+### `data/systems/kow-training.json` — Training Ground Question Bank
+
+Hand-authored multiple-choice question bank for Training Ground, plus the category vocabulary the questions are tagged against. Co-located in one file (Single Source of Truth): the `categories` block is the only definition of the category ids, and each question references one of them.
+
+```json
+{
+  "system_id": "kow",
+  "version": "v4",
+  "categories": [
+    { "id": "movement", "name": "Movement" },
+    { "id": "morale",   "name": "Nerve" }
+  ],
+  "questions": [
+    {
+      "id": "q_morale_001",
+      "category": "morale",
+      "question": "You have damaged an enemy unit and now test its Nerve. What do you roll, and what do you add?",
+      "options": ["Roll 2D6 only", "Roll D6 and add the damage", "Roll 2D6 and add current damage", "Roll 3D6"],
+      "answer": 2,
+      "explanation": "You roll 2D6 and add the unit's current total damage, then compare the total to its Nerve value.",
+      "source": "Rulebook p.33"
+    }
+  ]
+}
+```
+
+**Field contract (per question):**
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | Unique, convention `q_<category>_NNN`. Immutable once authored — a future per-question history/SRS layer will key on it. |
+| `category` | yes | Must match a `categories[].id` in the same file. |
+| `question` | yes | Self-contained stem. v1 is text-only; legal-move scenarios describe the whole board situation in text. |
+| `options` | yes | Array of answer strings (v1 authors exactly 4). Length is not hardcoded in logic — the renderer handles whatever is present. |
+| `answer` | yes | 0-based index into `options` **in authored order**. Options are shuffled at render, so this index is remapped, never rendered directly. |
+| `explanation` | recommended | Shown after answering — the recall payoff. |
+| `source` | recommended | Citation into the rulebook/FAQ, for maintenance and audit. |
+
+**Category vocabulary (10, locked):** `movement`, `ranged`, `melee`, `morale` (displayed "Nerve"), `magic`, `command`, `special_rules`, `unit_stats`, `terrain`, `scenario`. Ids are portable by convention: an overlapping concept in a future system reuses the same id. Full authoring guidance and boundary rules live in `docs/training-categories.md`.
+
+**Randomisation:** question order is shuffled once per session; option order is re-shuffled on **every** presentation of a question, so a repeat can't be answered from remembered position. Both use Fisher–Yates on copies — the source arrays are never mutated.
 
 ---
 
@@ -551,13 +606,24 @@ Static reference for the Goblin army. Used in Muster to build rosters and in Bat
 
 *Quick notes*
 - A single free-text field per turn for quick observations
-- Stored in `wbc_active_game` in localStorage
+- Saved automatically as the player types — no manual save action
+- Stored in `wbc_active_game` in localStorage; flushed to Sheets on game
+  end as the game payload's `notes` field
 
 *Game end*
 - Triggered manually by the player or automatically at end of turn 7
 - Prompt to record result (Win / Loss / Draw)
 - Write game summary to Sheets
 - Offer to proceed directly to Chronicle
+
+*Abandon*
+- Available both mid-game (in the scroll footer, alongside End Game) and
+  when resuming a game left in progress (resume card)
+- Confirms before acting, then discards the active game with no Sheets
+  write and no Chronicle entry
+- Distinct from Game end: no result is recorded, nothing reaches Chronicle
+- Exists to recover from setup mistakes (e.g. wrong player selected to go
+  first) or to walk away from a game that isn't worth logging
 
 **Deferred to later versions:**
 - Per-unit damage tracking
@@ -607,6 +673,34 @@ Static reference for the Goblin army. Used in Muster to build rosters and in Bat
 - Rule-flagging that creates prompts in future games
 - Opponent tracking across games
 - Win/loss statistics and trends
+- Surface Battle mode quick notes (`turn_log`, saved as the game payload's
+  `notes` field) somewhere in Chronicle — currently written to Sheets but
+  never displayed. Candidates: prefill the reflection form as a
+  memory-jogger, or show alongside reflection fields in the expanded entry.
+
+### 5.4 Training Ground (beta)
+
+**Purpose:** Practise instant recall of KoW 4E rules, scenarios, and unit stats between games — closing the gap Battle mode can't, since Battle only lowers lookup cost during play.
+
+**Placement:** reached via an archery-target button top-right, beside the Settings gear — deliberately outside the bottom nav to signal an experimental utility rather than a core mode.
+
+**Session flow:**
+- Multiple-choice, 4 options per question
+- Question order shuffled per session; option order re-shuffled on every presentation (repeats can't be answered from position)
+- Answer is revealed with an explanation and a rulebook/FAQ source citation
+- End-of-session score (correct / total), then start again
+
+**Stateless (v1):** no per-question history, no spaced repetition, no progress saved. Score is in-memory only and resets each session. This is a confirmed v1 scope decision, not a limitation to work around.
+
+**Isolation / Fail Gracefully:** the question bank loads lazily on first activation, entirely outside the boot chain. A missing/malformed bank, or a system with no `training_file`, degrades the mode to an empty/error state and never affects Muster, Battle, or Chronicle. `training.js` touches neither localStorage nor Sheets.
+
+**Data:** see `data/systems/kow-training.json` in section 4.
+
+**Deferred to later versions:**
+- Progress tracking / spaced repetition
+- Category filtering (the vocabulary is authored now to make this cheap later)
+- Question-bank expansion and ongoing maintenance
+- AI-generated questions (explicitly out of scope — a separate future concern)
 
 ---
 
@@ -628,6 +722,7 @@ Adding a second game system requires no changes to application code. The process
 4. Create `data/armies/{system_id}/index.json` listing available factions
 5. Create `data/armies/{system_id}/{faction}.json` for at least one army
 6. Test that all prompts and quick reference rules render correctly in Battle mode
+7. *(Optional)* Add `data/systems/{system_id}-training.json` (question bank + categories) and a `training_file` entry on that system in `data/systems/index.json` to enable Training Ground for it
 
 The app's JS reads the game system dynamically from the JSON manifests — there are no hardcoded references to Kings of War in `battle.js`, `muster.js`, or `chronicle.js`.
 
@@ -638,27 +733,30 @@ The app's JS reads the game system dynamically from the JSON manifests — there
 ### Now — v0.1 (MVP)
 Target: functional at the table within 3 weeks
 
-- [ ] Battle mode: turn tracker, phase display, unit roster with Routed toggle
-- [ ] Battle mode: phase prompts from `kow.json`
-- [ ] Battle mode: quick note per turn
-- [ ] Battle mode: game end flow → write to Sheets
-- [ ] Chronicle mode: post-game logging form
-- [ ] PWA setup: installable, works offline in Battle mode
-- [ ] `kow.json`: full turn sequence and prompts
-- [ ] `goblins.json`: Goblin unit roster
+- [x] Battle mode: turn tracker, phase display, unit roster with Routed toggle
+- [x] Battle mode: phase prompts from `kow.json`
+- [x] Battle mode: quick note per turn
+- [x] Battle mode: game end flow → write to Sheets
+- [x] Chronicle mode: post-game logging form
+- [x] PWA setup: installable, works offline in Battle mode
+- [x] `kow.json`: full turn sequence and prompts
+- [x] `goblins.json`: Goblin unit roster
 
 ### Next — v0.2
-- [ ] Chronicle mode: past games browser
-- [ ] Muster mode: army builder with save/load
-- [ ] Battle mode: load army from Muster into roster
+- [x] Chronicle mode: past games browser
+- [x] Muster mode: army builder with save/load
+- [x] Battle mode: load army from Muster into roster
 - [ ] Rotating Chronicle prompts (full set)
-- [ ] UI polish and mobile optimisation
+- [x] UI polish and mobile optimisation
 
 ### Later — v0.3+
+- [x] Training Ground (beta): multiple-choice rules-recall quiz mode
+- [ ] Training Ground: rules-accuracy audit of the question bank against the KoW 4E mini-rulebook and FAQ (structural validation done; rules-correctness pending)
 - [ ] Per-unit damage tracking in Battle mode
 - [ ] Quick reference rule cards accessible mid-game
 - [ ] Reflection tagging — link units and rules to Chronicle entries
 - [ ] Win/loss statistics in Chronicle
+- [ ] Surface Battle mode quick notes in Chronicle (see §5.3)
 
 ### Icebox — Maybe one day
 - [ ] Second game system support
@@ -679,7 +777,8 @@ Reviewed and updated each working session.
 | 1 | What is the Google Sheets authentication approach? | Sheets API requires OAuth or an API key. For single-user MVP, a published Sheet with Apps Script web app may be simpler than full OAuth. | Open |
 | 2 | How are armies shared between users? | Current approach: each user connects their own Sheet. A URL parameter carries the Sheet ID. Not elegant but functional for MVP. | Provisional |
 | 3 | What happens to Muster mode long-term? | If the Mantic Companion improves, does Warboss Companion need a full army builder, or does it focus on Battle and Chronicle? | Open |
-| 4 | Full Goblin unit roster | `goblins.json` needs to be populated with all units, stats, and special rules from the official army list. | In progress |
+| 4 | Full Goblin unit roster | `goblins.json` audited against the Mantic Companion PDF (source of truth) — 28 units, 3 flagged `"retired": true` rather than deleted to preserve saved-army compatibility. | Done |
 | 5 | Full Chronicle rotating prompt list | A full set of reflection prompts needs to be written. Target: 20–30 prompts. | In progress |
 | 6 | Will some players object to a helper app? | Concern that experienced players may consider rule-recall part of the skill of the game. Assessment: not our audience; app is a notepad, not an autopilot. | Low priority |
 | 7 | When/whether to pursue App Store distribution | PWA first. App Store only if user demand is clear and sustained. | Deferred |
+| 8 | Training Ground rules-accuracy audit | The 35 v1 questions passed structural validation and cite rulebook/FAQ pages, but each answer's correctness has not yet been independently verified against those sources. Recommended before promoting Training Ground beyond beta. | Open |
