@@ -31,7 +31,7 @@ Live: https://nimbrethil81.github.io/warboss-companion/
 Development: https://nimbrethil81.github.io/warboss-companion-dev/
 
 ## Current Features
-- under development
+- under development. 
 
 ## Tech Stack
 PWA / Vanilla JS / Google Sheets API / GitHub Pages
