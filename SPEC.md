@@ -134,6 +134,7 @@ warboss-companion/
 │   ├── battle.js           ← Battle mode logic
 │   ├── chronicle.js        ← Chronicle mode logic
 │   ├── training.js         ← Training Ground mode logic (beta)
+│   ├── resolver.js         ← ALL option/effect resolution + saved-army normalisation
 │   ├── sheets.js           ← ALL Google Sheets read/write (single module)
 │   └── storage.js          ← ALL localStorage read/write (single module)
 │
@@ -158,6 +159,7 @@ warboss-companion/
 
 - `sheets.js` is the only file that touches Google Sheets. When migrating to a new database, only this file changes.
 - `storage.js` is the only file that touches localStorage. Centralises offline fallback.
+- `resolver.js` is the only place effective profiles and effective points are computed. Given a unit and a set of selected option ids, it produces the effective profile (stats, added special rules, added weapons, granted spells) and effective points; it also normalises the saved-army `units` field into a consistent `{ unit_id, options }` shape. Both Muster (authoring/pricing) and Battle (roster build) consume it, so option logic is never duplicated. Pure logic — no DOM, localStorage, Sheets, or fetch.
 - `data/systems/kow.json` is the single source of truth for all KoW game rules, turn sequence, and prompts. Adding a new game system means adding a new JSON file alongside it — no code changes required.
 - `data/armies/kow/goblins.json` holds static unit reference data. This belongs in version control, not in Sheets. Sheets stores game results and reflections.
 - `data/armies/kow/index.json` is a manifest listing all available factions for KoW. The app reads this to discover armies without needing to enumerate directory contents (which browsers cannot do natively). Adding a new army means adding the file and one line to this manifest.
@@ -171,8 +173,14 @@ On app load
   └── app.js loads kow.json (turn sequence, prompts)
   └── sheets.js fetches saved armies and past games (with localStorage fallback on failure)
 
+During Muster
+  └── muster.js loads/saves armies via sheets.js; resolver.js normalises the
+      saved units field and computes effective points per selected unit
+
 During Battle mode
   └── battle.js holds all game state in localStorage
+  └── On start, resolver.js resolves each saved-army entry into the effective
+      profile snapshotted onto the roster (see localStorage schema below)
   └── No Sheets writes during play (offline-safe, fast)
 
 On game end
@@ -198,9 +206,25 @@ Four tabs. Each tab represents one entity type — no data duplicated across tab
 | army_id | string | UUID, generated on creation |
 | army_name | string | e.g. "Goblin Raiding Party" |
 | game_system | string | e.g. "kow" — matches JSON filename |
-| units | JSON string | Serialised array of unit objects |
+| units | JSON string | Serialised array of unit entries (see below) |
 | created_at | timestamp | ISO 8601 |
 | updated_at | timestamp | ISO 8601 |
+
+**`armies.units` entry forms.** The serialised array may hold entries in either
+of two shapes, freely mixed:
+
+- **Legacy** — a bare `unit_id` string (`"goblin-rabble-regiment"`). Written by
+  pre-Options-Consumption versions.
+- **Current** — an object `{ "unit_id": "...", "options": ["opt-id", ...] }`
+  carrying the selected option ids for that unit. `options` may be absent or
+  empty.
+
+Rule: **readers accept both forms; writers always write the object form** (even
+for units with no options). Existing legacy armies load unchanged and migrate to
+object form the next time they are saved in Muster (Fail Gracefully). Option-id
+immutability is what makes stored option references stable across saves.
+Normalisation to a consistent `{ unit_id, options }` array happens in exactly
+one place — `resolver.js` — never re-implemented per caller.
 
 **`games` tab**
 | Column | Type | Notes |
@@ -255,14 +279,31 @@ localStorage is the source of truth **during an active game only**. On game end,
   "active_player": "you",
   "units": [
     {
-      "unit_id": "uuid",
-      "name": "Goblin Rabble",
-      "routed": false
+      "inst_id": "uuid",
+      "unit_id": "wiz-hero",
+      "name": "Wiz", "size": "Individual", "type": "Hero (Cav)",
+      "sp": 10, "me": 5, "sh": 4, "de": 4, "att": 1, "ne": 11,
+      "special_rules": ["…effective, post-options…"],
+      "weapons": [{ "name": "Shortbows", "range": "18\"", "sh": 5, "att": 8 }],
+      "spells":  [{ "spell": "Lightning Bolt", "power": 3 }],
+      "selected_option_ids": ["wiz-fleabag", "wiz-lightning-bolt"],
+      "option_labels": ["Mount on a fleabag", "Lightning Bolt"],
+      "routed": false,
+      "damage": 0
     }
   ],
   "turn_log": []
 }
 ```
+
+All stat fields on a roster instance are the **effective** values from
+`resolver.js`, snapshotted once at game start and never re-resolved — mid-game
+state is stable even if `goblins.json` changes before the game ends. `inst_id`
+is unique per instance so duplicate units (e.g. 6× Goblin Rabble) track routed/
+damage state independently. `weapons`, `spells`, `selected_option_ids`, and
+`option_labels` are **omitted entirely when empty**, so instances built from
+legacy (no-option) armies are byte-identical in spirit to pre-Options-Consumption
+snapshots and the resume path needs no migration (absent fields render nothing).
 
 ### PWA & Offline Strategy
 
@@ -498,11 +539,11 @@ Static reference for the Goblin army. Used in Muster to build rosters and in Bat
       "size": "Regiment",
       "type": "Infantry",
       "sp": 5,
-      "me": "5+",
+      "me": 5,
       "sh": "-",
-      "de": "3+",
-      "att": 15,
-      "ne": "16",
+      "de": 4,
+      "att": 12,
+      "ne": "14",
       "pts": 80,
       "special_rules": ["Rabble"],
       "traits": ["Goblin"]
@@ -512,6 +553,78 @@ Static reference for the Goblin army. Used in Muster to build rosters and in Bat
 ```
 
 > **Note:** Unit roster to be completed. Stats taken from the official Kings of War army lists. This file is reference data only — it does not duplicate anything stored in Google Sheets.
+
+**Unit options (upgrades).** Units may carry an `options` array. Absence is fully tolerated — Muster renders and points-costs whatever is present, and a unit with no `options` shows no upgrades. Example (real Goblin options):
+
+```json
+"options": [
+  { "id": "fleabag-riders-maniacs", "label": "Maniacs",
+    "description": "Gains Thunderous Charge (+1).",
+    "scope": "self", "cost": 5,
+    "effects": [ { "type": "add_special_rule", "rule": "Thunderous Charge (+1)" } ] },
+  { "id": "wiz-fleabag", "label": "Mount on a fleabag",
+    "scope": "self", "cost": 15,
+    "effects": [ { "type": "set_field", "field": "sp", "value": 10 },
+                 { "type": "set_field", "field": "type", "value": "Hero/Cav" } ] }
+]
+```
+
+Each option's `cost` is the flat points for that unit's single size — because units are split per size, the same option appears on each size's entry with its own value (Maniacs above is `5` on the Troop entry; the Regiment entry carries it at `10`).
+
+Field contract (per option):
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | Unique within the unit. Immutable — saved armies reference selected option ids (same contract as `unit_id`). |
+| `label` | yes | Short display name shown in Muster. |
+| `description` | recommended | Human-readable effect text; the sole representation for battalion-scope options. |
+| `scope` | yes | `"self"` modifies the carrying unit; `"battalion"` affects/unlocks *other* units — informational in Muster v1, no cross-unit enforcement. |
+| `group` | no | Absent = independent toggle. A string = mutually-exclusive choose-one group (at most one selected per group). |
+| `cost` | yes (self-scope) | Integer points added when the option is selected. Omitted for battalion-scope (cost attaches to the target unit, stated in `description`); free options use `0`. Units are split per size, so each size's cost lives on its own unit object — no size-keyed map. |
+| `effects` | recommended (self-scope) | Array of structured effects (below). Drives stat/rule application; absence still leaves display + points correct. |
+
+Effect objects:
+
+| `type` | Payload | Meaning |
+|---|---|---|
+| `add_special_rule` | `rule` | Adds the named special rule to the profile. |
+| `set_field` | `field`, `value` | Sets a top-level profile field (e.g. `sp`, `type`) — covers stat and mount type changes. |
+| `add_weapon` | `name`, `range`, `sh`, `att` | Adds a weapon profile to the unit. |
+| `grant_spell` | `spell`, `power` | Adds an inline caster spell offered by the unit — distinct from the shared Arcane Library pool. |
+
+The effect vocabulary is closed for this pass; new types are additive and require a SPEC bump. Battalion-scope options carry no self effects in v1; the future composition system will action them.
+
+**Unit availability (composition caps).** A unit may carry an `availability` object recording how many times it can be taken. Two kinds, with different scopes:
+
+```json
+"availability": { "type": "limited", "scope": "battalion", "max": 2 }
+```
+```json
+"availability": { "type": "unique" }
+```
+
+`[N]` after a unit name in the army list = **Limited** (`type: "limited"`), max `N` selections *per Battalion*. `[U]` = **Unique** (`type: "unique"`), max 1 in the entire *army*. Absent `availability` = unconstrained.
+
+| Field | Required | Notes |
+|---|---|---|
+| `type` | yes | `"limited"` or `"unique"`. |
+| `scope` | limited only | `"battalion"` — the only scope the rulebook defines for limited units. |
+| `max` | limited only | Integer cap per Battalion (the `N` in `[N]`). |
+
+Like `options.scope: "battalion"`, this is capture-only in v1: Muster stores the true rule but does not yet enforce per-Battalion or per-army counts — that lands with the future army-composition system. Recording it now means the roster never needs re-reading when that system is built.
+
+**Unit category (composition role).** Every unit carries a `category` — its composition role, used by the future composition system to validate Battalion structure. Values match the rulebook's unlock categories: `"Core"`, `"Auxiliary"`, `"Specialist"`, `"Support"`, `"Commander"`.
+
+Category is **per size**, not per family: the same unit at different sizes can sit in different categories (e.g. Fleabag Riders are `"Auxiliary"` as a Troop, `"Core"` as a Regiment), so it lives on each size-specific `unit_id`.
+
+Commander units additionally carry `commander_role` (`"champion"` or `"warlord"`), preserving the rulebook's two distinct constraints without a hardcoded grouping: the Commander unlock (1-4/Battalion) keys off `category == "Commander"`, the Warlord cap (1/Battalion) off `commander_role == "warlord"`. Absent on non-Commanders.
+
+| Field | Required | Notes |
+|---|---|---|
+| `category` | yes | One of `Core`, `Auxiliary`, `Specialist`, `Support`, `Commander`. Per size-specific `unit_id`. |
+| `commander_role` | Commanders only | `"champion"` or `"warlord"`. Absent otherwise. |
+
+Like `availability`, capture-only in v1 — stored now, not yet enforced.
 
 ### `data/systems/kow-training.json` — Training Ground Question Bank
 
@@ -569,15 +682,26 @@ Hand-authored multiple-choice question bank for Training Ground, plus the catego
 - Save army to Google Sheets
 - Load a saved army into Battle mode
 
+**Options authoring (v0.3 — Options Consumption):**
+- The draft is an **index-addressed** array of `{ unit_id, options }` entries, not a flat `unit_id` list, so two copies of the same unit can carry different options. Removal and option editing address a row by its array index.
+- Each selected unit with options shows an expand control (⚙ + fitted-count badge) opening an inline options panel:
+  - **Independent options** (no `group`) render as toggles.
+  - **Grouped options** (shared `group` string) render as single-select with deselection — picking one clears any other in the group; re-picking the selected one clears the group (all group options are optional upgrades).
+  - **Battalion-scope options** (`scope: "battalion"`) render as **informational** rows (label + description, no control, nothing stored) — no cross-unit enforcement in v1.
+- Points recompute live from the resolver as options toggle (free = 0; battalion-scope options carry no cost on the unit, per their description).
+- The picker groups available units by **`category`** in rulebook order (Core, Auxiliary, Specialist, Support, Commander), surfaces `availability` caps as display-only badges (Limited: max N per Battalion / Unique — 1 per army), and marks units that carry options.
+- **Saved format:** always written as object-form `{ unit_id, options }` entries (see §4, `armies.units`).
+
+**Retired-unit resolution:** a saved army referencing a `retired: true` unit still resolves and displays correctly (with a "retired" tag), counting its full points — retirement only hides a unit from *new* selection in the picker, it does not drop it from armies that already reference it. (This corrects an earlier bug where an edited army silently dropped retired units and their points.)
+
 **Deferred to later versions:**
-- Full stat lookup from `goblins.json`
-- Points validation against an army limit
+- Points validation against an army limit (enforcement; the limit is captured and displayed now)
+- Per-Battalion / per-army composition enforcement of `availability` caps and battalion-scope option effects (the future army-composition system)
 - Multiple army slots
 - Sharing armies with other users
 
 **UI notes:**
-- Simple add/remove unit interface
-- Minimal input — unit name, size, and points only at MVP
+- Simple add/remove unit interface with inline per-unit options panel
 - Saved armies listed on a home screen for quick selection
 
 ---
@@ -598,6 +722,7 @@ Hand-authored multiple-choice question bank for Training Ground, plus the catego
 - Displays all units in the loaded army
 - One-tap "Routed" toggle per unit — routed units are visually marked and moved to a collapsed section
 - Units not yet engaged remain prominent
+- Each unit card reflects the **effective** profile from the resolver — the mounted/upgraded unit, not the base entry — with fitted options shown as chips under the unit name and any added weapons / granted spells shown as compact sub-lines (v0.3, Options Consumption). Armies referencing a now-`retired` unit_id still resolve and display (unit_id immutability protects the reference).
 
 *Phase prompts*
 - At the start of each phase, display relevant prompts from `kow.json`
@@ -751,6 +876,7 @@ Target: functional at the table within 3 weeks
 
 ### Later — v0.3+
 - [x] Training Ground (beta): multiple-choice rules-recall quiz mode
+- [x] Options Consumption: unit options (upgrades) authored in Muster and shown in Battle; shared `resolver.js`; effective-profile roster; category grouping + availability badges (display-only); retired-unit resolution fix
 - [ ] Training Ground: rules-accuracy audit of the question bank against the KoW 4E mini-rulebook and FAQ (structural validation done; rules-correctness pending)
 - [ ] Per-unit damage tracking in Battle mode
 - [ ] Quick reference rule cards accessible mid-game
