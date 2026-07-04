@@ -23,6 +23,22 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/).
     is a pure content addition
   - Service worker cache bump handled manually (outside this change)
 
+## [0.3.5] - 2026-07-04
+### Fixed
+- Settings and Training Ground buttons could render above the page title — level with the iOS status bar icons — when Warboss Companion was installed as a standalone PWA via "Add to Home Screen". Caused by `#gear-btn` and `#training-btn` using a fixed `top: 14px` while the page title correctly accounted for `env(safe-area-inset-top)`. Both buttons now use `calc(env(safe-area-inset-top, 0px) + 14px)`, matching the title's inset handling. No visual change in Safari or desktop browsers (inset is `0px` there).
+
+## [0.3.4] - 2026-07-04
+### Fixed
+- Muster: replaced the 0.3.3 sticky-footer approach for the Save Army button —
+  position:sticky drifted mid-scroll on iOS Safari (its anchor point is
+  unreliable when the scroll container's height comes from flex-1 inside a
+  100dvh ancestor, as the address bar's dynamic resizing recalculates the
+  offset). Replaced with a non-scrolling page + dedicated .muster-scroll
+  inner container + a true flex-sibling action bar — the same mechanism
+  that already keeps the bottom nav reliably in place, immune to the same
+  viewport-resize interaction
+- `service-worker.js`: cache bumped to `wbc-v25` (style.css, muster.js changed)
+
 ## [0.3.3] - 2026-07-04
 ### Changed
 - Muster: the Save Army button is now sticky at the bottom of the builder
