@@ -4,6 +4,90 @@ All notable changes to Warboss Companion are documented here.
 Format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- Faction selection in Muster — the player now chooses a faction when creating
+  an army, and Muster/Battle resolve each army against its own faction. Closes
+  the "no faction picker" gap flagged in the Elves entry below (Elves data is
+  now reachable in the UI, not just shipped) and completes the deferred
+  service-worker deploy step. Built in three staged passes (faction-data model +
+  schema → Muster picker → Battle resolve + offline), verified against existing
+  Goblin armies at each stage boundary
+  - `app.js`: replaced the single `WBC.armyData` global (which auto-loaded
+    `armyIndex.armies[0]`) with `WBC.factionData`, a cache keyed by faction id.
+    Every faction in the manifest is loaded at boot (`_loadOneFaction`), each
+    isolated so one failing surfaces a notice without blocking the others.
+    Added `WBC.getFactionData(id)` — the single defaulting lookup (missing or
+    unknown id → legacy `goblins`, so pre-faction armies still resolve).
+    `_validateArmyEnums` now validates every loaded faction, not just the
+    default. `WBC.armyData` retained as a **temporary** back-compat alias
+    (`_syncArmyDataAlias`, pointing at the default faction) — marked for removal
+    (SPEC §7)
+  - `muster.js`: the new-army flow gains a faction picker (a dropdown built from
+    the army manifest; auto-selected and shown as a fixed label when only one
+    faction exists). No silent default — Save stays disabled until a faction is
+    chosen. The unit picker is scoped to the chosen faction (empty, with a
+    "choose a faction first" hint, until one is picked); changing faction after
+    units are added confirms and clears them. Editing a saved army shows its
+    faction as a read-only label (fixed at creation). `_resolveUnit`,
+    `_entryPts`, and `_savedArmyPts` thread a faction id (defaulting to the
+    draft's); the save payload writes `faction_id` and takes `game_system` from
+    the chosen faction's own data
+  - `battle.js`: `_findUnitInArmyData(unitId, factionId)` now resolves via
+    `getFactionData`. The army-select dropdown prices each saved army against
+    its own faction, and the game-start roster resolves the chosen army against
+    its `faction_id`. `resolver.js` unchanged — it already takes the unit object
+    as input, so only the *source* of that object changed
+  - `sheets.js`: no behaviour change (records pass through the proxy
+    transparently); the `saveArmy` doc shape now documents `faction_id`
+  - `Code.gs` (Apps Script backend): added `faction_id` to `COLUMNS.armies` as
+    the rightmost column. Writes place values by position, so this must match
+    the physical column order in the sheet — noted in the file header and
+    SPEC §4
+  - `service-worker.js`: added `data/armies/kow/elves.json` to the precache and
+    bumped the cache version `wbc-v25` → `wbc-v26`, completing the deploy step
+    deferred in the Elves entry
+  - Google Sheet (manual, outside the code change): `faction_id` column added to
+    the `armies` tab and backfilled to `goblins` for existing rows
+  - SPEC.md updated: faction data model + `WBC.armyData` alias under
+    Architecture; load-all-at-boot and per-faction validation in Data Flow;
+    `faction_id` in the `armies` schema (with the column-order caveat);
+    faction-scoped resolution notes; a Faction selection subsection in Muster
+    (§5.1) and a Battle (§5.2) note; roadmap entries for the shipped feature and
+    the `WBC.armyData` alias-removal cleanup
+- Elves army reference — the first faction authored on the hardened type/size
+  template (see G1 below). Transcribed faithfully from the KoW 4E rulebook
+  army-list section, staged (base stats → options/availability → assembled
+  JSON) with a per-unit verification table against the source
+  - Added `data/armies/kow/elves.json`: 27 units / 40 size-entries across the
+    Core & Auxiliary, Specialist, Support, Champion, and Warlord sections.
+    `ne` single-valued (no `+`); every single-model unit `size: "1"`; all
+    `unit_id`s unique; points present on all entries; passes
+    `validateUnitEnums()` against `kow-enums.json`
+  - `data/armies/kow/index.json`: registered the faction (`{ "id": "elves",
+    "name": "Elves", "file": "elves.json" }`). Registration here is now part
+    of the definition-of-done for adding a faction — a faction file is only
+    discoverable once listed in the manifest
+  - Introduced the optional `composition_notes` field (array of verbatim
+    strings) for inherent, non-chosen list-building rules a hero grants to
+    *other* units (Drakon Lord & Dragon Kindred Lord → Drakon Riders become
+    Specialist; Nimue → Kindred Gladestalker Regiments become Core). Kept out
+    of `special_rules`; a clean read-target for the future composition system.
+    Capture-only in v1
+  - Captured the source pattern that one section heading can span two
+    categories ("Core and Auxiliary"), with `(AUX)` on a size row as a per-row
+    Auxiliary override. The Archwraith → Boskwraiths battalion upgrade is
+    stored as a battalion-scope option (description-only — actioning
+    cross-unit effects is a roadmap item)
+  - SPEC.md updated: Elves in the army-manifest example + faction-registration
+    note; the PDF category-derivation note; a `composition_notes` data-
+    structure entry; and a v0.3+ roadmap item for army-composition validation /
+    cross-unit battalion effects
+  - Known gap surfaced (not a code change): Muster has no faction picker — the
+    app auto-loads `armyIndex.armies[0]` (Goblins), so Elves data ships but is
+    not yet selectable in the UI. Faction selection is a new feature still to
+    be designed
+  - Deploy step (outside this change): bump the service worker cache version
+    and add `data/armies/kow/elves.json` to the precache list so the faction
+    loads offline
 - Unit `type`/`size` schema hardening (G1) — introduced a canonical type/size
   vocabulary and a load-time validation guard, ahead of authoring the remaining
   19 KoW factions from the audited Goblins template
