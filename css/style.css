@@ -2778,6 +2778,54 @@ select.setup-input {
   font-style: normal;
 }
 
+/* ── Builder: duplicate/redundancy notices ───────────────
+   Player-facing only (authoring warnings stay in the console). Amber rather
+   than blood-red: the selection is legal and was accepted, it just does
+   nothing useful — this is advice, not an error. */
+.muster-opt-notices {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(160, 100, 0, 0.10);
+  border: 1px solid rgba(160, 100, 0, 0.45);
+  border-radius: 5px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+}
+
+.muster-opt-notice-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #d99a2b;
+}
+
+.muster-opt-notice-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.muster-opt-notice-line {
+  font-family: 'Crimson Text', serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ash-light, #d4c9b8);
+}
+
+.muster-opt-notice-line + .muster-opt-notice-line {
+  margin-top: 5px;
+}
+
+/* Same condition, shown on the collapsed row so it survives closing the
+   panel. Sits between the points and the gear button. */
+.muster-sel-warn {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: #d99a2b;
+  cursor: default;
+}
+
 /* ── Builder: picker — options hint + availability badge ── */
 .muster-opt-hint {
   font-family: 'Cinzel', serif;

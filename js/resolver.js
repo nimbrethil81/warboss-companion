@@ -82,10 +82,14 @@ window.WBCResolver = (() => {
    * interpreted in exactly one place.
    *
    * @param {Object} effect
-   * @param {Object} ctx — { profile, weapons, spells, warnings, sourceId }
+   * @param {Object} ctx — { profile, weapons, spells, warnings, sourceId,
+   *   sourceLabel }. `sourceLabel` is a player-facing noun phrase naming
+   *   where the effect came from (e.g. 'the "Hex (2)" upgrade'), used only
+   *   to compose notices; `sourceId` remains the developer-facing key used
+   *   in warnings.
    */
   function _applyEffect(effect, ctx) {
-    const { profile, weapons, spells, warnings, sourceId } = ctx;
+    const { profile, weapons, spells, warnings, sourceId, sourceLabel } = ctx;
 
     switch (effect.type) {
       case 'add_special_rule':
@@ -135,7 +139,11 @@ window.WBCResolver = (() => {
         break;
 
       case 'grant_spell':
-        spells.push({ spell: effect.spell, power: effect.power });
+        // `_source` is internal bookkeeping for duplicate detection only —
+        // _resolveSpellDuplicates() strips it before the spells array is
+        // returned, so the public { spell, power } shape is unchanged (it is
+        // persisted verbatim into Battle's saved roster snapshots).
+        spells.push({ spell: effect.spell, power: effect.power, _source: sourceLabel || sourceId });
         break;
 
       default:
@@ -143,6 +151,97 @@ window.WBCResolver = (() => {
           `Unknown effect type "${effect.type}" (source "${sourceId}") — skipped.`
         );
     }
+  }
+
+  /**
+   * A spell's display label, e.g. "Hex (2)". Power may legitimately be
+   * absent on a malformed grant; the bare name is still the right label.
+   * @param {{spell: string, power: *}} s
+   * @returns {string}
+   */
+  function _spellLabel(s) {
+    return (s.power === undefined || s.power === null)
+      ? String(s.spell)
+      : `${s.spell} (${s.power})`;
+  }
+
+  /**
+   * Whether a unit already carries a given spell innately, as a plain string
+   * in its special_rules (some profiles list spells that way rather than via
+   * a grant_spell effect — e.g. the Green Lady's "Heal (4)", Grupp Longnail's
+   * "Hex (2)"). Returns the matching rule string, or null.
+   *
+   * Matches the exact name, or the name followed by " (" so that a power
+   * value is tolerated. The trailing " (" is what keeps "Heal" from matching
+   * an unrelated "Healing Aura (2)".
+   *
+   * @param {Array} specialRules
+   * @param {string} spellName
+   * @returns {string|null}
+   */
+  function _innateSpellRule(specialRules, spellName) {
+    if (!Array.isArray(specialRules)) return null;
+    for (const rule of specialRules) {
+      if (typeof rule !== 'string') continue;
+      const trimmed = rule.trim();
+      if (trimmed === spellName || trimmed.startsWith(`${spellName} (`)) return trimmed;
+    }
+    return null;
+  }
+
+  /**
+   * Collapse duplicate spell grants and explain each one.
+   *
+   * A unit gains nothing from holding the same spell twice — the rules cap
+   * casting at one Ranged attack per Turn, and no rule stacks two copies of
+   * a spell — but the app deliberately still ALLOWS the selection (a player
+   * may have a reason to hold both, and silently refusing a legal purchase
+   * is worse than explaining it). So the redundant copy is dropped from the
+   * effective spell list, keeping the unit card truthful, and a plain-English
+   * notice records what happened and that the points were spent regardless.
+   *
+   * Two ways a duplicate arises, both covered:
+   *   - the spell is already on the unit's profile as a special rule, and is
+   *     then granted again by an option or artefact
+   *   - two grants (option + option, or option + artefact) name the same spell
+   *
+   * Input order is the authored option order, then the artefact — so which
+   * copy survives is deterministic and independent of click order.
+   *
+   * @param {Array<{spell, power, _source}>} rawSpells — grants in apply order
+   * @param {Object} profile — the working profile (special_rules already applied)
+   * @param {string[]} notices — appended to, in place
+   * @returns {Array<{spell, power}>} the kept spells, `_source` stripped
+   */
+  function _resolveSpellDuplicates(rawSpells, profile, notices) {
+    const kept = [];
+    const keptSourceByName = new Map();
+
+    for (const s of rawSpells) {
+      const label  = _spellLabel(s);
+      const innate = _innateSpellRule(profile.special_rules, s.spell);
+
+      if (innate) {
+        notices.push(
+          `${innate} is already part of this unit's profile, so the ${label} ` +
+          `from ${s._source} adds nothing — but its points are still being spent.`
+        );
+        continue;
+      }
+
+      if (keptSourceByName.has(s.spell)) {
+        notices.push(
+          `${label} is granted twice — by ${keptSourceByName.get(s.spell)} and by ` +
+          `${s._source}. Only one copy has any effect, and both are being paid for.`
+        );
+        continue;
+      }
+
+      keptSourceByName.set(s.spell, s._source);
+      kept.push({ spell: s.spell, power: s.power });
+    }
+
+    return kept;
   }
 
   /**
@@ -171,12 +270,23 @@ window.WBCResolver = (() => {
    *   spells: Array<{spell, power}>,
    *   applied: Array<{id, label}>,
    *   artefact: {id, label}|null,
-   *   warnings: string[]
+   *   warnings: string[],
+   *   notices: string[]
    * }}
+   *
+   * Two distinct message channels, deliberately not merged:
+   *   `warnings` are AUTHORING problems (unknown option id, missing cost,
+   *     unrecognised effect type) — phrased for whoever maintains the data,
+   *     and belong in the console.
+   *   `notices` are PLAYER-facing observations about a legal but redundant
+   *     selection — phrased in plain English and safe to show in the UI.
+   *   Keeping them separate means new developer diagnostics can be added
+   *     freely without leaking into the player's options panel.
    */
   function resolve(unit, selectedOptionIds, artefact) {
     const selected = Array.isArray(selectedOptionIds) ? selectedOptionIds : [];
     const warnings = [];
+    const notices  = [];
 
     // Deep-copy the base profile fields we know about — never mutate `unit`.
     const profile = {
@@ -236,7 +346,11 @@ window.WBCResolver = (() => {
 
       const effects = Array.isArray(option.effects) ? option.effects : [];
       for (const effect of effects) {
-        _applyEffect(effect, { profile, weapons, spells, warnings, sourceId: option.id });
+        _applyEffect(effect, {
+          profile, weapons, spells, warnings,
+          sourceId:    option.id,
+          sourceLabel: `the "${option.label}" upgrade`,
+        });
       }
 
       applied.push({ id: option.id, label: option.label });
@@ -255,13 +369,33 @@ window.WBCResolver = (() => {
 
       const effects = Array.isArray(artefact.effects) ? artefact.effects : [];
       for (const effect of effects) {
-        _applyEffect(effect, { profile, weapons, spells, warnings, sourceId: artefact.id });
+        _applyEffect(effect, {
+          profile, weapons, spells, warnings,
+          sourceId:    artefact.id,
+          sourceLabel: `the ${artefact.name}`,
+        });
       }
 
       artefactResult = { id: artefact.id, label: artefact.name };
     }
 
-    return { profile, pts, weapons, spells, applied, artefact: artefactResult, warnings };
+    // Duplicate-spell pass runs LAST, once every option and the artefact have
+    // contributed, so it sees the unit's final spell set rather than a partial
+    // one. Points are deliberately left alone: the player really did spend
+    // them, and quietly refunding a redundant purchase would make the total
+    // disagree with the list they built.
+    const resolvedSpells = _resolveSpellDuplicates(spells, profile, notices);
+
+    return {
+      profile,
+      pts,
+      weapons,
+      spells: resolvedSpells,
+      applied,
+      artefact: artefactResult,
+      warnings,
+      notices,
+    };
   }
 
   // ─── ARTEFACT ELIGIBILITY ──────────────────────────────────────────────────

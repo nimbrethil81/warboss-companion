@@ -7,6 +7,10 @@
  *     army list. The faction is chosen at creation and fixed thereafter.
  *   - Author unit options (upgrades) per selected unit — independent toggles,
  *     mutually-exclusive groups, and informational battalion-scope options
+ *   - Surface the resolver's player-facing `notices` (e.g. the same spell
+ *     granted by both an upgrade and an artefact) on the unit's row and in
+ *     its expand panel. Developer-facing `warnings` are NOT shown here —
+ *     they stay in the console where they belong
  *   - Author a single magic artefact per eligible unit (WBC.artefactData —
  *     kow-artefacts.json), gated by WBC.systemConfig.artefact_rules via the
  *     shared WBCResolver eligibility functions; enforces unique-per-army at
@@ -631,9 +635,18 @@ var WBCMuster = (function () {
     var hasOptions   = Array.isArray(u.options) && u.options.length > 0;
     var eligibleArts = _eligibleArtefactsFor(u);
     var hasArtefacts = eligibleArts.length > 0;
-    var expandable   = hasOptions || hasArtefacts;
-    var expanded     = _expandedIndices.has(index);
-    var fittedCount  = entry.options.length + (entry.artefact ? 1 : 0);
+    var expandable    = hasOptions || hasArtefacts;
+    var expanded      = _expandedIndices.has(index);
+    var fittedCount   = entry.options.length + (entry.artefact ? 1 : 0);
+    /* Player-facing notices only (resolved.warnings are authoring diagnostics
+       and stay in the console). Marked on the collapsed row too, so a
+       redundant selection stays visible once the panel is closed. */
+    var notices       = Array.isArray(resolved.notices) ? resolved.notices : [];
+    var noticeMarker  = notices.length > 0
+      ? '  <span class="muster-sel-warn" title="' + _escapeHtml(notices.join(' ')) + '"'
+        + ' aria-label="' + notices.length + ' note' + (notices.length !== 1 ? 's' : '')
+        + ' about this unit\'s upgrades">\u26A0</span>'
+      : '';
 
     var label = _escapeHtml(u.name)
       + (u.size ? ' <span class="muster-sel-size">(' + _escapeHtml(u.size) + ')</span>' : '')
@@ -643,6 +656,7 @@ var WBCMuster = (function () {
       '<div class="muster-sel-row" data-entry-index="' + index + '">',
       '  <span class="muster-sel-name">' + label + '</span>',
       '  <span class="muster-sel-pts">' + resolved.pts + ' pts</span>',
+      noticeMarker,
       expandable
         ? [
             '  <button class="muster-opt-expand" data-entry-index="' + index + '"',
@@ -659,12 +673,40 @@ var WBCMuster = (function () {
 
     if (expandable && expanded) {
       var panelHtml = '';
+      /* Notices lead the panel: they describe a problem with the selections
+         below, so they should be read before them. */
+      panelHtml += _renderNoticesPanel(notices);
       if (hasOptions) panelHtml += _renderOptionsPanel(u, entry, index);
       if (hasArtefacts) panelHtml += _renderArtefactPanel(eligibleArts, entry, index);
       rowHtml += '<div class="muster-opt-panel">' + panelHtml + '</div>';
     }
 
     return rowHtml;
+  }
+
+  /**
+   * Render the resolver's player-facing notices at the top of a unit's expand
+   * panel. An empty list renders nothing at all — no empty box, no heading —
+   * so the common case (no duplicates) looks exactly as it did before.
+   *
+   * Purely derived: notices are recomputed from the draft on every render, so
+   * they appear and disappear the moment an option or artefact is toggled,
+   * with nothing to store, invalidate or migrate.
+   *
+   * @param {string[]} notices — resolved.notices
+   * @returns {string}
+   */
+  function _renderNoticesPanel(notices) {
+    if (!notices || notices.length === 0) return '';
+
+    var items = notices.map(function (n) {
+      return '<div class="muster-opt-notice-line">' + _escapeHtml(n) + '</div>';
+    }).join('');
+
+    return '<div class="muster-opt-notices" role="note">'
+      + '<span class="muster-opt-notice-icon" aria-hidden="true">\u26A0</span>'
+      + '<div class="muster-opt-notice-body">' + items + '</div>'
+      + '</div>';
   }
 
   function _renderOptionsPanel(u, entry, index) {
