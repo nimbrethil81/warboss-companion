@@ -153,11 +153,13 @@ window.WBCSheets = (() => {
    *   units:       string,   — JSON.stringify(entries[]) — { unit_id, options[], artefact }
    *   created_at:  string,   — ISO 8601
    *   updated_at:  string,   — ISO 8601
+   *   pts_limit:   number,   — the army's points limit, e.g. 2300
    * }
    *
-   * faction_id and game_system pass straight through to the Apps Script proxy;
-   * this wrapper is transparent to the record shape. The armies tab and the
-   * Apps Script COLUMNS.armies list must both include faction_id.
+   * faction_id, game_system and pts_limit pass straight through to the Apps
+   * Script proxy; this wrapper is transparent to the record shape. The armies
+   * tab and the Apps Script COLUMNS.armies list must both include faction_id
+   * and pts_limit, in the same physical column order.
    *
    * @param {Object} army
    * @returns {Promise<{ success: boolean, error: string|null }>}

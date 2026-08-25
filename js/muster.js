@@ -16,9 +16,10 @@
  *     shared WBCResolver eligibility functions; enforces unique-per-army at
  *     selection time by disabling artefacts already equipped elsewhere in
  *     the draft
- *   - Display live points, resolved via the shared WBCResolver against each
- *     unit's selected options AND artefact — never computed locally
- *     (Single Source of Truth)
+ *   - Display live points against the army's own points limit, resolved via
+ *     the shared WBCResolver against each unit's selected options AND
+ *     artefact — never computed locally (Single Source of Truth). The limit
+ *     is a property of the army, persisted with it, not a session default
  *   - Save named armies to Sheets as { unit_id, options[], artefact } entries
  *     — options/artefact are id references only, never duplicated stat data
  *   - List all saved armies with load/delete actions
@@ -53,6 +54,42 @@
 var WBCMuster = (function () {
   'use strict';
 
+  // ─── Points-limit constants ───────────────────────────────────────────────
+
+  /* An army's points limit is stored on the army (armies.pts_limit), not held
+     as a session default — so it is the same on every device. These bounds are
+     the single source for both the number input's min/max attributes and the
+     normaliser below, so the two can never drift apart. */
+  var DEFAULT_PTS_LIMIT = 2000;
+  var MIN_PTS_LIMIT     = 100;
+  var MAX_PTS_LIMIT     = 9999;
+
+  /**
+   * Coerce any externally-supplied points limit into a usable number.
+   *
+   * Every value that reaches the draft from outside goes through here — the
+   * Sheets row, the localStorage cache, and the number input — so there is
+   * exactly one place that decides what a bad limit becomes. Sheets hands
+   * back a real number for a numeric cell and an empty string for a blank
+   * one; a hand-edited cell can hand back anything at all.
+   *
+   * Empty / missing / unparseable → the fallback (an army's current limit
+   * where there is one, otherwise the default). A parseable number outside
+   * the bounds is clamped rather than rejected, matching what the input's
+   * own min/max advertise.
+   *
+   * @param {*} raw
+   * @param {number} [fallback] — defaults to DEFAULT_PTS_LIMIT
+   * @returns {number}
+   */
+  function _normalisePtsLimit(raw, fallback) {
+    var fb = (typeof fallback === 'number' && !isNaN(fallback)) ? fallback : DEFAULT_PTS_LIMIT;
+    if (raw === null || raw === undefined || raw === '') return fb;
+    var n = parseInt(raw, 10);
+    if (isNaN(n)) return fb;
+    return Math.min(Math.max(n, MIN_PTS_LIMIT), MAX_PTS_LIMIT);
+  }
+
   // ─── Module state ─────────────────────────────────────────────────────────
 
   /**
@@ -69,7 +106,7 @@ var WBCMuster = (function () {
                             // army is saved (D4). Legacy saved armies with no
                             // faction_id are read as DEFAULT_FACTION on the edit path.
     entries:    [],
-    pts_limit:  2000,
+    pts_limit:  DEFAULT_PTS_LIMIT,
   };
 
   /** Indices (into _draft.entries) whose options panel is currently expanded. */
@@ -165,7 +202,7 @@ var WBCMuster = (function () {
       army_name:  '',
       faction_id: _soleFactionId(),
       entries:    [],
-      pts_limit:  2000,
+      pts_limit:  DEFAULT_PTS_LIMIT,
     };
   }
 
@@ -392,7 +429,11 @@ var WBCMuster = (function () {
 
     armies.forEach(function (army) {
       var entries = WBCResolver.normalizeArmyUnits(army.units);
-      var pts = _savedArmyPts(entries, army.faction_id);
+      var pts     = _savedArmyPts(entries, army.faction_id);
+      /* Rows saved before pts_limit existed carry a blank cell — normalised to
+         the default, so legacy armies read correctly with no migration. */
+      var limit   = _normalisePtsLimit(army.pts_limit);
+      var overCls = pts > limit ? ' muster-army-card-pts--over' : '';
 
       html += [
         '<div class="muster-army-card" data-army-id="' + _escapeHtml(army.army_id) + '">',
@@ -400,7 +441,8 @@ var WBCMuster = (function () {
         '    <div class="muster-army-card-name">' + _escapeHtml(army.army_name || 'Unnamed Army') + '</div>',
         '    <div class="muster-army-card-meta">',
         '      ' + entries.length + ' unit' + (entries.length !== 1 ? 's' : ''),
-        '      · ' + pts + ' pts',
+        '      · <span class="muster-army-card-pts' + overCls + '">'
+          + pts + ' / ' + limit + '</span> pts',
         '    </div>',
         '  </div>',
         '  <div class="muster-army-card-actions">',
@@ -408,6 +450,7 @@ var WBCMuster = (function () {
         '            data-army-id="' + _escapeHtml(army.army_id) + '"',
         '            data-army-name="' + _escapeHtml(army.army_name || '') + '"',
         '            data-faction-id="' + _escapeHtml(army.faction_id || DEFAULT_FACTION) + '"',
+        '            data-pts-limit="' + limit + '"',
         '            data-entries="' + _escapeHtml(JSON.stringify(entries)) + '"',
         '            aria-label="Edit ' + _escapeHtml(army.army_name || 'army') + '">',
         '      Edit',
@@ -435,7 +478,7 @@ var WBCMuster = (function () {
           army_name:  this.getAttribute('data-army-name'),
           faction_id: this.getAttribute('data-faction-id') || DEFAULT_FACTION,
           entries:    entries,
-          pts_limit:  2000,
+          pts_limit:  _normalisePtsLimit(this.getAttribute('data-pts-limit')),
         };
         _expandedIndices = new Set();
         _renderBuilder();
@@ -518,7 +561,8 @@ var WBCMuster = (function () {
       '  <span id="muster-pts-total" class="muster-pts-total">' + total + ' pts</span>',
       '  <span class="muster-pts-sep">/</span>',
       '  <input id="muster-pts-limit" class="muster-pts-limit-input" type="number"',
-      '         min="100" max="9999" step="50" value="' + _draft.pts_limit + '" />',
+      '         min="' + MIN_PTS_LIMIT + '" max="' + MAX_PTS_LIMIT + '"',
+      '         step="50" value="' + _draft.pts_limit + '" />',
       '  <span class="muster-pts-label">pt limit</span>',
       '</div>',
 
@@ -930,15 +974,16 @@ var WBCMuster = (function () {
       });
     }
 
-    /* Points limit input */
+    /* Points limit input — on change (blur / Enter) rather than on every
+       keystroke: normalising mid-typing would fight the user at "2" and "23"
+       on the way to "2300". The accepted value is written back into the field
+       afterwards, so the box can never display a number the draft rejected. */
     var limitInput = _el('muster-pts-limit');
     if (limitInput) {
       limitInput.addEventListener('change', function () {
-        var val = parseInt(this.value, 10);
-        if (!isNaN(val) && val >= 100) {
-          _draft.pts_limit = val;
-          _refreshPtsBar();
-        }
+        _draft.pts_limit = _normalisePtsLimit(this.value, _draft.pts_limit);
+        this.value = _draft.pts_limit;
+        _refreshPtsBar();
       });
     }
 
@@ -1172,6 +1217,7 @@ var WBCMuster = (function () {
       faction_id:  _draft.faction_id,
       game_system: (factionData && factionData.game_system) || 'kow',
       units:       JSON.stringify(unitsPayload),
+      pts_limit:   _draft.pts_limit,
       created_at:  _draft.army_id ? undefined : now,  // only set on create
       updated_at:  now,
     };

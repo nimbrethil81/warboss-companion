@@ -2381,6 +2381,13 @@ select.setup-input {
   margin-top: 3px;
 }
 
+/* Army total shown against that army's own limit. Red only when over — an
+   army that fits should read as unremarkable. */
+.muster-army-card-pts--over {
+  color: var(--blood-light, #e03030);
+  font-weight: 600;
+}
+
 .muster-army-card-actions {
   display: flex;
   gap: 6px;
