@@ -19,8 +19,12 @@
  *     shell is served without requiring a second tab close.
  *
  * Ways-of-Working notes:
- *   • CACHE_VERSION is the only "magic number" here; bump it any time the
- *     file list or strategy changes so the old cache is pruned cleanly.
+ *   • CACHE_VERSION is the only "magic number" here. Bump it whenever the
+ *     file list or strategy changes — AND whenever the CONTENTS of any
+ *     shell file change. Same-origin requests are Cache-First with no
+ *     revalidation, so an edited js/, css/ or data/ file is invisible to
+ *     anyone with the old cache until the version changes and activate()
+ *     prunes it. Forgetting this looks exactly like "my fix didn't work".
  *   • Google domains are identified by hostname suffix, not hardcoded URLs,
  *     so any new Apps Script deployment URL is covered automatically.
  *   • No game-specific values live here — all content comes from kow.json.
@@ -30,7 +34,7 @@
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 
-const CACHE_VERSION  = 'wbc-v27';
+const CACHE_VERSION  = 'wbc-v28';
 const CACHE_SHELL    = CACHE_VERSION + '-shell';   // app shell + data
 const CACHE_FONTS    = CACHE_VERSION + '-fonts';   // Google Fonts responses
 
