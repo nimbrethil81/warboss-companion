@@ -1349,6 +1349,25 @@ button:focus-visible,
   color: var(--ash, #8a7f72);
 }
 
+/* Wavering tally — pushed to the right edge of the turn header by
+   margin-left:auto, in the space left over after the turn block and the
+   You/Opp toggle. Hidden entirely at zero (battle.js sets display). */
+.battle-wavering-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: 'Cinzel', serif;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--gold-light, #f0c94a);
+  border: 1px solid var(--gold, #d4a843);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(212, 168, 67, 0.1);
+}
+
 /* You / Opp toggle */
 .battle-player-toggle {
   display: flex;
@@ -1662,6 +1681,8 @@ button:focus-visible,
   color: var(--blood, #9b1f1f);
 }
 
+/* The whole card is the tap target for the expansion (see battle.js);
+   the Waver and Routed buttons inside it stop propagation. */
 .unit-card {
   background: var(--stone, #211b13);
   border: 1px solid var(--tab-border, #352b1c);
@@ -1669,6 +1690,7 @@ button:focus-visible,
   overflow: hidden;
   position: relative;
   margin-bottom: 7px;
+  cursor: pointer;
 }
 
 /* Gold left accent strip */
@@ -1766,6 +1788,69 @@ button:focus-visible,
   opacity: 0.5;
 }
 
+/* ── Wavering state ───────────────────────────────────── */
+
+/* Wavering badge — same chip shape as the option chips, but filled and
+   bright rather than outlined, so it reads as a live state rather than
+   a build-time property. The word itself carries the meaning; the
+   colour only reinforces it. */
+.unit-wavering-chip {
+  color: var(--ink, #0d0b08);
+  border-color: var(--gold-light, #f0c94a);
+  background: var(--gold-light, #f0c94a);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Brightened accent strip on a wavering card */
+.unit-card--wavering::before {
+  background: var(--gold-light, #f0c94a);
+}
+
+/* The restriction reminder — always visible on a wavering card,
+   expanded or not. Text comes from kow.json. */
+.unit-wavering-note {
+  font-family: 'Crimson Text', serif;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--gold-light, #f0c94a);
+  padding: 6px 12px 7px 14px;
+  border-top: 1px solid rgba(212, 168, 67, 0.35);
+  background: rgba(212, 168, 67, 0.07);
+}
+
+/* Waver toggle — sits immediately left of Routed, so it is narrower;
+   still a 40px-tall tap target. Not rendered at all on a routed card. */
+.unit-waver-btn {
+  flex-shrink: 0;
+  min-height: 40px;
+  min-width: 58px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid var(--tab-border, #352b1c);
+  background: transparent;
+  color: var(--ash, #8a7f72);
+  font-family: 'Cinzel', serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.unit-waver-btn:hover {
+  border-color: var(--gold, #d4a843);
+  color: var(--gold-light, #f0c94a);
+}
+
+.unit-waver-btn--on {
+  border-color: var(--gold-light, #f0c94a);
+  color: var(--ink, #0d0b08);
+  background: var(--gold-light, #f0c94a);
+}
+
 /* Routed / Restore button — minimum 44×44px tap target */
 .unit-routed-btn {
   flex-shrink: 0;
@@ -1816,6 +1901,30 @@ button:focus-visible,
   border-left: 1px solid rgba(53,43,28,0.5);
 }
 
+/* Expanded card: all six stats on one row. Cells share the width
+   equally and the values shrink slightly, so Ne ("14/16" — the widest
+   value on the card) still fits at 390px. */
+.unit-card-stats--full .unit-stat-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.unit-card-stats--full .unit-stat-value {
+  font-size: 14px;
+}
+
+/* Within the expanded row, the stats this phase actually calls for keep
+   the gold accent; the rest are muted back so the phase read survives. */
+.unit-stat-cell--key .unit-stat-value {
+  color: var(--gold-light, #f0c94a);
+}
+
+.unit-stat-cell--muted .unit-stat-label,
+.unit-stat-cell--muted .unit-stat-value {
+  opacity: 0.55;
+}
+
 .unit-stat-label {
   font-family: 'Cinzel', serif;
   font-size: 8px;
@@ -1852,14 +1961,14 @@ button:focus-visible,
   color: var(--ash, #8a7f72);
 }
 
-/* Special rules row — truncated, tap to expand */
+/* Special rules row — truncated while the card is collapsed, wrapped
+   while it is expanded. Not tappable in its own right. */
 .unit-rules-row {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 10px 8px 14px;
   border-top: 1px solid rgba(53,43,28,0.4);
-  cursor: pointer;
   min-height: 36px;
 }
 
@@ -1883,18 +1992,19 @@ button:focus-visible,
   line-height: 1.4;
 }
 
-/* Expanded state — allow wrap */
-.unit-rules-text--expanded {
-  white-space: normal;
-  overflow: visible;
+/* Expanded card — rules wrap in full instead of truncating. Driven by
+   the card's expanded state; there is no separate rules-row toggle. */
+.unit-card--expanded .unit-rules-row {
+  align-items: flex-start;
 }
 
-.unit-rules-arrow {
-  font-size: 13px;
-  color: var(--ash, #8a7f72);
-  opacity: 0.5;
-  flex-shrink: 0;
-  transition: transform 0.15s;
+.unit-card--expanded .unit-rules-label {
+  padding-top: 3px;
+}
+
+.unit-card--expanded .unit-rules-text {
+  white-space: normal;
+  overflow: visible;
 }
 
 /* ═══════════════════════════════════════════════════════

@@ -82,14 +82,6 @@ Data must not be duplicated across files or sheets. Specifically:
 - No stat values hardcoded in both HTML and JS
 - If something is referenced in two places, it is imported/fetched from the one source
 
-### Precise Code Placement
-Every code instruction must include:
-- The exact file (`app.js`, `index.html`, etc.)
-- A literal anchor line already present in the file (e.g. "Insert directly after `const SHEET_URL = ...`")
-- A closing anchor where relevant (e.g. "before the closing `</script>` tag")
-
-Ambiguous instructions like "add this to your fetch logic" or "put this near the top" are not acceptable.
-
 ### No Magic Numbers or Hardcoded Strings in Logic
 Game-specific values — number of turns, phase names, prompt text, unit stats — must live in the game system JSON config file, not scattered through `app.js` or `index.html`. When a rule changes or a new game system is added, only the JSON file changes.
 
@@ -168,6 +160,7 @@ warboss-companion/
 - `sheets.js` is the only file that touches Google Sheets. When migrating to a new database, only this file changes.
 - `storage.js` is the only file that touches localStorage. Centralises offline fallback.
 - `resolver.js` is the only place effective profiles and effective points are computed. Given a unit, its selected option ids, and an optional equipped artefact, it produces the effective profile (stats, added special rules, added weapons, granted spells) and effective points; it also decides artefact eligibility (via `kow.json`'s `artefact_rules` plus each artefact's own restrictions) and normalises the saved-army `units` field into a consistent `{ unit_id, options, artefact }` shape. Both Muster (authoring/pricing) and Battle (roster build) consume it, so option/artefact logic is never duplicated. Pure logic — no DOM, localStorage, Sheets, or fetch. It also exposes `validateUnitEnums()`, which checks each unit's `type`/`size` against `kow-enums.json` at load (see *Enum validation* under Data Flow).
+- **Two message channels out of the resolver — `warnings` and `notices`.** `resolve()` returns both, and they are deliberately not merged. `warnings` are **authoring** diagnostics (unknown option id, missing cost, unrecognised effect type) — phrased for whoever maintains the data, and belong in the console. `notices` are **player-facing** observations about a legal but redundant selection — phrased in plain English and safe to render in the UI. Keeping them apart means new developer diagnostics can be added freely without leaking into a player's options panel, and player copy never has to be written defensively for a developer audience. Muster renders `notices` only; Battle logs `warnings` to the console and ignores `notices` (the redundancy has already been resolved out of the snapshot by then).
 - `data/systems/kow.json` is the single source of truth for all KoW game rules, turn sequence, and prompts. Adding a new game system means adding a new JSON file alongside it — no code changes required.
 - `data/armies/kow/goblins.json`, `data/armies/kow/elves.json`, and every other `{faction}.json` hold static unit reference data. This belongs in version control, not in Sheets. Sheets stores game results and reflections.
 - **Faction data model (keyed cache).** At boot, `app.js` loads *every* faction file listed in the army manifest into `WBC.factionData`, an object keyed by faction id (`{ goblins: {…}, elves: {…} }`). This is the runtime source of truth for unit resolution: Muster and Battle look units up through the single helper `WBC.getFactionData(faction_id)`, so armies of different factions can be priced and resolved side by side in one view (the Battle army dropdown, the Muster saved-army list). Loading all factions at boot (rather than lazily per army) keeps every resolve site a synchronous lookup and re-validates all faction data on every boot; lazy per-army loading is noted as a public-release-phase optimisation, not built. `getFactionData()` defaults a missing or unknown id to the legacy default faction (`goblins`) so armies saved before faction selection existed still resolve.
@@ -238,8 +231,11 @@ Four tabs. Each tab represents one entity type — no data duplicated across tab
 | units | JSON string | Serialised array of unit entries (see below) |
 | created_at | timestamp | ISO 8601 |
 | updated_at | timestamp | ISO 8601 |
+| pts_limit | integer | The army's points limit, e.g. `2300`. A property of the army, not a session default, so it is identical on every device. A missing or blank value (rows created before the column existed) is read as the default limit (2000); writers always populate it. See §5.1, *Points limit*. |
 
-> **Physical column order.** The Apps Script backend writes row values by position, so the order of `COLUMNS.armies` in `Code.gs` must match the physical left-to-right column order in the sheet. `faction_id` is the rightmost column (immediately after `updated_at`); if it is ever inserted elsewhere, `COLUMNS.armies` must be reordered to match, or writes land in the wrong columns.
+> **Physical column order.** The Apps Script backend writes row values by position, so the order of `COLUMNS.armies` in `Code.gs` must match the physical left-to-right column order in the sheet. `faction_id` and `pts_limit` are the two rightmost columns, in that order, immediately after `updated_at` — each was appended to the right-hand end when it was added. If either is ever moved, `COLUMNS.armies` must be reordered to match, or writes land in the wrong columns.
+>
+> **Adding a column is a two-place change, sheet first.** `upsertRow()` preserves a column the record does not mention by reading the existing row *by header name*. A column listed in `COLUMNS` but absent from Row 1 of the sheet therefore resolves to no match and writes a blank — silently. Always add the header to the sheet before adding the name to `COLUMNS`.
 
 **`armies.units` entry forms.** The serialised array may hold entries in any of
 these shapes, freely mixed:
@@ -346,11 +342,14 @@ entirely when empty/absent**, so instances built from legacy (no-option,
 no-artefact) armies are byte-identical in spirit to earlier snapshots and the
 resume path needs no migration (absent fields render nothing). The artefact is
 stored as its own singular pair (a unit carries at most one), kept separate from
-the plural `option_labels`.
+the plural `option_labels`. `spells` holds at most one entry per spell name — the
+resolver collapses redundant grants before the snapshot is taken (see §5.1,
+*Duplicate spells*) — so a roster card never lists the same spell twice.
 
 ### PWA & Offline Strategy
 
 - `service-worker.js` caches `index.html`, `style.css`, all JS files, and all JSON files in `/data/`
+- **`CACHE_VERSION` must be bumped whenever the *contents* of any shell file change, not only when the file list or caching strategy changes.** Same-origin requests are served Cache-First with no revalidation, so an edited `js/`, `css/` or `data/` file stays invisible to anyone holding the previous cache until the version changes and `activate()` prunes it. Forgetting the bump presents exactly as "the fix didn't work", which makes it an expensive omission to diagnose — the caveat is repeated in the file's own header for that reason
 - Every faction file in the manifest (`goblins.json`, `elves.json`, …) is named in the precache list, so building and playing armies of any faction works offline. This list currently tracks the manifest by hand; deriving it from the manifest at install is noted as a public-release-phase clean-up
 - The app is fully functional offline for Battle mode (no Sheets required during play)
 - The Training Ground question bank (`kow-training.json`) is precached in the shell, so the quiz works offline; if the file is ever absent, the mode degrades gracefully and the rest of the app is unaffected
@@ -639,7 +638,7 @@ Field contract (per option):
 | `label` | yes | Short display name shown in Muster. |
 | `description` | recommended | Human-readable effect text; the sole representation for battalion-scope options. |
 | `scope` | yes | `"self"` modifies the carrying unit; `"battalion"` affects/unlocks *other* units — informational in Muster v1, no cross-unit enforcement. |
-| `group` | no | Absent = independent toggle. A string = mutually-exclusive choose-one group (at most one selected per group). |
+| `group` | no | Absent = independent toggle. A string = mutually-exclusive choose-one group (at most one selected per group). **Use only where the source says the choices are genuinely exclusive** — "may select either X *or* Y" (e.g. the Giant's Club or Cleaver). A semicolon-separated list of separately-priced upgrades ("Lightning Bolt (3) for +20 pts; Bane Chant (2) for +20 pts; …") is a set of *independent* options and must carry no `group`, however related the entries look. Grouping merely-similar options silently forbids a legal purchase, and the app has no way to tell that apart from a real restriction. |
 | `cost` | yes (self-scope) | Integer points added when the option is selected. Omitted for battalion-scope (cost attaches to the target unit, stated in `description`); free options use `0`. Units are split per size, so each size's cost lives on its own unit object — no size-keyed map. |
 | `effects` | recommended (self-scope) | Array of structured effects (below). Drives stat/rule application; absence still leaves display + points correct. |
 
@@ -651,7 +650,7 @@ Effect objects:
 | `set_field` | `field`, `value` | Sets a top-level profile field to an absolute value (e.g. `sp`, `type`) — covers stat and mount type changes. |
 | `modify_field` | `field`, `delta`, optional `min`/`max` | Adds a delta to a numeric top-level field (e.g. `sp +1`, `de -1`), with optional clamp. Preserves the field's original JS type — fields stored as strings (e.g. the SPEC-locked `ne`) are parsed, adjusted, and cast back — so the effective profile stays shape-compatible with the base data. |
 | `add_weapon` | `name`, `range`, `sh`, `att`, optional `special_rules` | Adds a weapon profile to the unit; `special_rules` (e.g. `["Piercing (1)"]`) is carried when present. |
-| `grant_spell` | `spell`, `power` | Adds an inline caster spell offered by the unit — distinct from the shared Arcane Library pool. |
+| `grant_spell` | `spell`, `power` | Adds an inline caster spell offered by the unit — distinct from the shared Arcane Library pool. A spell the unit would end up holding twice is collapsed to one copy, with a player-facing notice (see §5.1, *Duplicate spells*). |
 
 This effect vocabulary is shared verbatim by unit options and magic artefacts (see below) — the resolver interprets it in exactly one place. New types are additive and require a SPEC bump. Battalion-scope options carry no self effects in v1; the future composition system will action them.
 
@@ -853,6 +852,7 @@ Loaded via the optional `enum_file` manifest field, in parallel with the army in
   - **Independent options** (no `group`) render as toggles.
   - **Grouped options** (shared `group` string) render as single-select with deselection — picking one clears any other in the group; re-picking the selected one clears the group (all group options are optional upgrades).
   - **Battalion-scope options** (`scope: "battalion"`) render as **informational** rows (label + description, no control, nothing stored) — no cross-unit enforcement in v1.
+  - **Notices** from the resolver (see §3) lead the panel, above the options they describe, and a ⚠ marker appears on the unit's collapsed row so the condition survives closing the panel. Both are purely derived — recomputed on every render, appearing and disappearing as options and artefacts toggle, with nothing stored, invalidated or migrated. Nothing renders when there is nothing to say. Authoring `warnings` are never shown here.
 - Points recompute live from the resolver as options toggle (free = 0; battalion-scope options carry no cost on the unit, per their description).
 - The picker groups available units by **`category`** in rulebook order (Core, Auxiliary, Specialist, Support, Commander), surfaces `availability` caps as display-only badges (Limited: max N per Battalion / Unique — 1 per army), and marks units that carry options.
 - **Saved format:** always written as object-form `{ unit_id, options, artefact }` entries (see §4, `armies.units`).
@@ -863,10 +863,29 @@ Loaded via the optional `enum_file` manifest field, in parallel with the army in
 - **Unique-per-army** is enforced at authoring time: an artefact already equipped by another unit in the draft renders disabled, with an "already equipped by …" note.
 - Points recompute live including the artefact's cost. Artefacts that make an unconditional profile change (e.g. Brew of Haste's +1 Speed, via `modify_field`) feed the effective stats; conditional/bespoke artefacts are display-only.
 
+**Points limit (v0.3):**
+- An army's points limit is **a property of the army**, stored on its record (`armies.pts_limit`) and saved with it — not a session default and not a per-device preference. Set 2300 on one device and every device shows 2300.
+- Bounds are `100`–`9999`, defaulting to `2000`. These three values are defined once in `muster.js` and drive both the number input's `min`/`max` attributes and the normaliser below, so the control and the validation cannot drift apart.
+- **One normalisation point.** Every limit arriving from outside — the Sheets row, the localStorage cache, the number input — passes through a single `_normalisePtsLimit()` helper, so exactly one rule decides what a bad value becomes. Empty, missing or unparseable → the fallback (the army's current limit where there is one, otherwise the default); a parseable number outside the bounds is *clamped* rather than rejected, matching what the input's own `min`/`max` advertise. Sheets returns a real number for a numeric cell and an empty string for a blank one, and a hand-edited cell can return anything at all, so this is a genuine boundary, not a formality.
+- The limit is committed on **Save Army**, not the moment it is changed — consistent with every other field on that form. Leaving the builder without saving triggers the standard "Discard unsaved changes?" confirmation, so a changed limit is never lost silently.
+- Saved-army cards read `N units · total / limit pts`, with the total marked when over. A legal army reads as unremarkable; only an over-limit one draws the eye.
+- Rows saved before the column existed default cleanly, so no backfill or migration is required. Their limit becomes explicit the next time they are saved.
+- Battle does not read the limit — it is a Muster-only concern.
+
+**Duplicate spells (v0.3):** a unit can end up holding the same spell twice — bought as an upgrade *and* granted by an artefact (Trickster's Wand → Hex), or granted on top of one already printed on its profile as a special rule (Grupp Longnail's "Hex (2)", the Green Lady's "Heal (4)"). The rules give no benefit for the second copy: casting is capped at one Ranged attack per Turn and no rule stacks two copies of a spell.
+
+The app **allows the selection and explains it** rather than forbidding it. A player may have a reason to hold both, and silently refusing a legal purchase is worse than accounting for it. So:
+
+- The redundant copy is dropped from the effective spell list, keeping the unit card truthful — one `Hex (2)`, not two.
+- A plain-English notice records which two sources collided and that the points were spent on both.
+- **Points are deliberately not refunded.** The player really did spend them; quietly adjusting the total would make it disagree with the list they built.
+- Which copy survives is deterministic — options apply in authored order, then the artefact — so the result never depends on click order.
+- Detection covers spells listed as plain strings in `special_rules`, matching on the exact spell name or the name followed by `" ("`. That trailing bracket is what stops `Heal` matching an unrelated `Healing Aura (2)`. No master spell list is required: only the names actually being granted are looked for.
+
 **Retired-unit resolution:** a saved army referencing a `retired: true` unit still resolves and displays correctly (with a "retired" tag), counting its full points — retirement only hides a unit from *new* selection in the picker, it does not drop it from armies that already reference it. (This corrects an earlier bug where an edited army silently dropped retired units and their points.)
 
 **Deferred to later versions:**
-- Points validation against an army limit (enforcement; the limit is captured and displayed now)
+- Points validation against an army limit (**enforcement** — the limit is stored on the army and displayed against the total now, in the builder and on the saved-army cards, but nothing blocks saving or playing an over-limit army)
 - Per-Battalion / per-army composition enforcement of `availability` caps and battalion-scope option effects (the future army-composition system)
 - Multiple army slots
 - Sharing armies with other users
@@ -1050,6 +1069,8 @@ Target: functional at the table within 3 weeks
 - [x] Options Consumption: unit options (upgrades) authored in Muster and shown in Battle; shared `resolver.js`; effective-profile roster; category grouping + availability badges (display-only); retired-unit resolution fix
 - [x] Artefacts Consumption: magic artefact catalogue (`kow-artefacts.json`); `artefact_rules` eligibility in `kow.json`; per-unit artefact authoring in Muster with unique-per-army enforcement; artefact chip + effective profile in Battle; `modify_field` effect type
 - [x] Faction selection: choose a faction when creating an army; `faction_id` persisted on the army record; keyed `WBC.factionData` cache with load-all-at-boot and per-faction enum validation; faction-scoped resolution in Muster and Battle; faction fixed at creation (read-only on edit); single-faction auto-select shortcut; faction files precached for offline. Introduced the temporary `WBC.armyData` back-compat alias noted for removal below.
+- [x] Army points limit persisted: `armies.pts_limit` column; the limit stored on the army rather than defaulting per session; single normalisation point with clamped bounds; total shown against the limit on saved-army cards. Enforcement remains deferred (see §5.1)
+- [x] Duplicate-spell handling: the resolver collapses a spell granted twice and returns a player-facing `notices` channel alongside the developer-facing `warnings`; Muster surfaces notices in the options panel and on the unit row
 - [ ] Training Ground: rules-accuracy audit of the question bank against the KoW 4E mini-rulebook and FAQ (structural validation done; rules-correctness pending)
 - [ ] Per-unit damage tracking in Battle mode
 - [ ] Quick reference rule cards accessible mid-game
@@ -1083,3 +1104,4 @@ Reviewed and updated each working session.
 | 6 | Will some players object to a helper app? | Concern that experienced players may consider rule-recall part of the skill of the game. Assessment: not our audience; app is a notepad, not an autopilot. | Low priority |
 | 7 | When/whether to pursue App Store distribution | PWA first. App Store only if user demand is clear and sustained. | Deferred |
 | 8 | Training Ground rules-accuracy audit | The 35 v1 questions passed structural validation and cite rulebook/FAQ pages, but each answer's correctness has not yet been independently verified against those sources. Recommended before promoting Training Ground beyond beta. | Open |
+| 9 | Should a service-worker update be announced to the user? | `index.html` registers the worker but listens for neither `updatefound` nor `controllerchange`, so a new version is picked up silently on the *next* load rather than the current one. Harmless at single-user scale (deploy, reload, done), but at the small-group phase it becomes "they are playing off last week's points values and do not know it". | Open |

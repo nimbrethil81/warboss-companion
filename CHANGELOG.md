@@ -4,6 +4,193 @@ All notable changes to Warboss Companion are documented here.
 Format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- Claude Code adopted as the implementation surface, running locally against the
+  dev repo. It cannot see this project's Claude Project instructions or its
+  attached rules PDFs, so anything it needs to know now has to live in the repo
+  itself. No app behaviour changed and no cache bump is required — the only
+  runtime change is to the Apps Script backend, which does not ship from here
+  - `CLAUDE.md` added at the repo root — the file Claude Code loads at the start
+    of every session. Covers what the project is and that Dan is the sole,
+    non-professional developer; the stack; what is and is not in the repo;
+    deployment and the two cache-version numbers; the five-point design
+    checklist as something to *produce and report* rather than hold privately;
+    worked bad-versus-good examples of how to put a design decision and how to
+    write test steps; the architectural rules; and a "things that look like bugs
+    and are not" section covering `validateUnitEnums()`'s deliberate throw, the
+    `WBC.armyData` alias, and the positional-column coupling to `Code.gs`.
+    Adapted from the Project instructions rather than copied — those are written
+    for a conversation, this is written for an agent working in a codebase
+  - `apps-script/` added, holding a reference copy of `Code.gs` plus a README.
+    The running copy still lives inside the Sheets workbook and nothing here
+    deploys it. Until now half the request/response contract `sheets.js` depends
+    on was invisible to anything reading the repo, and `Code.gs` had no version
+    history at all
+  - `Code.gs`: added `CODE_VERSION` and a `?action=version` GET route, answered
+    before any tab handling so it needs no other parameters. The repo copy and
+    the deployed copy can otherwise diverge silently, and because writes place
+    values by position a mismatch does not fail — it puts the wrong values in
+    the wrong cells with no error. The version ping makes that visible in one
+    browser hit. Also corrected the file's own documentation: the request
+    contract and the `doPost` header both omitted the `delete` action, which has
+    been implemented and called by `sheets.js` all along. **Not deployed by
+    committing** — it needs pasting into the Apps Script editor and the existing
+    deployment editing (not a new one, which would change the URL)
+  - Reviewed `Code.gs` for credentials before it entered a public repo's
+    permanent history: none. It reaches the Sheet with
+    `SpreadsheetApp.getActiveSpreadsheet()` rather than a hardcoded ID, and
+    holds no keys, tokens or addresses. A header block now records that the file
+    is public and that anything of that kind belongs in Script Properties
+  - `SPEC.md`: removed the *Precise Code Placement* subsection from §2. It
+    required a literal anchor line with every code instruction — a convention
+    for pasting snippets into a chat, which an agent editing files directly does
+    not need. The other four §2 principles describe the software rather than the
+    collaboration and are untouched
+  - `docs/RULES_NOTES.md` added — where a rule fact goes once confirmed, so the
+    same question is not asked twice. Scope policy at the top: cite, never
+    quote; demand-driven, never systematic; the army data already in `data/` is
+    a ceiling, not a precedent. Paired with a rewritten *Game rules* section in
+    `CLAUDE.md` telling Claude Code to stop and ask rather than state a rule it
+    cannot verify, and never to paste rulebook sentences into a tracked file —
+    including rule text pasted into the session to answer its own question
+  - `docs/GIT_WORKFLOW.md` added — branch, review the diff, test locally, merge,
+    test on the phone, deploy live by hand; and why a branch is an undo button
+    rather than a preview, since Pages serves only `main`. Explicitly marked as
+    current practice rather than a permanent rule, with the four conditions that
+    would justify rewriting it
+  - `docs/training-question-workflow.md`: fixed the now-dangling *Precise Code
+    Placement* cross-reference, and made explicit that the workflow runs in a
+    chat rather than Claude Code — it depends on the rulebook and FAQ, which are
+    deliberately not in the repo, so it has to run where those files legitimately
+    are
+  - `.gitignore` added. The repo had none. Most important entry is `*.pdf`: the
+    rules PDFs are Mantic's copyrighted material, keeping a copy in the working
+    folder is fine and committing one is not, and a public repo's history has no
+    cleanup path
+- Muster: an army's points limit is now saved with the army. Changing it from
+  2000 to 2300 and reopening the army showed 2000 again — the limit lived only
+  in the in-memory draft, was hardcoded in three places, and was never written
+  to or read back from the army record. Stored on the army rather than per
+  device, so it is the same at the table as on the desktop
+  - Google Sheet (manual, outside the code change): `pts_limit` column added to
+    the `armies` tab, to the right of `faction_id`. No backfill — existing rows
+    hold a blank cell and read as the default limit until next saved
+  - `Code.gs` (Apps Script backend): added `pts_limit` to `COLUMNS.armies` as
+    the rightmost column, after `faction_id`. Also hardened `upsertRow()`: the
+    "keep what the sheet already holds" fallback for an unmentioned field looked
+    the existing value up with `headers.indexOf(col)` without checking for `-1`,
+    so a column present in `COLUMNS` but missing from Row 1 indexed `[-1]`,
+    yielded `undefined`, and silently wrote a blank. That is precisely the
+    failure mode of adding a column to the code before the sheet, and it failed
+    invisibly; it now resolves to an explicit empty string, with the ordering
+    requirement stated in the file header and SPEC §4
+  - `muster.js`: three hardcoded `2000` literals collapsed into
+    `DEFAULT_PTS_LIMIT`, joined by `MIN_PTS_LIMIT` / `MAX_PTS_LIMIT` — the same
+    constants now generate the number input's `min`/`max` attributes and bound
+    the new `_normalisePtsLimit()` helper, so control and validation cannot
+    drift. Every externally-supplied limit (Sheets row, cache, input box) passes
+    through that one helper: empty/missing/unparseable falls back, out-of-range
+    clamps. The Edit handler carries the stored limit into the draft via a
+    `data-pts-limit` attribute instead of assuming the default; the save payload
+    writes `pts_limit`; saved-army cards read `N units · total / limit pts` with
+    the total marked when over
+  - `muster.js` (same pass): the limit input previously validated only the floor
+    (100) and not the ceiling (9999) its own `max` advertised, and on a rejected
+    value silently kept the old number while continuing to display the typed
+    text — the box could lie about what was stored. It still reacts on
+    change (blur/Enter) rather than per keystroke, since normalising mid-typing
+    would fight the user at "2" and "23" en route to "2300", but the accepted
+    value is now written back into the field
+  - `sheets.js`: no behaviour change (records pass through the proxy
+    transparently); the `saveArmy` doc shape now documents `pts_limit`
+  - `style.css`: `.muster-army-card-pts--over` for an over-limit card total
+  - `service-worker.js`: cache bumped `wbc-v28` → `wbc-v29` (`muster.js`,
+    `sheets.js`, `style.css` changed)
+  - Verified against the shapes Sheets actually returns: `"2300"` and numeric
+    `2300` both resolve to 2300; blank cell, missing column, `null` and
+    `"two thousand"` all resolve to 2000; `50` and `250000` clamp to 100 and
+    9999; clearing or mistyping the box while editing a 2300 army keeps 2300
+  - SPEC.md updated: `pts_limit` in the `armies` schema with the two-tail-column
+    ordering caveat and a sheet-before-`COLUMNS` warning; a *Points limit*
+    subsection in Muster (§5.1); the deferred-enforcement wording tightened
+    (stored and displayed now, not merely captured); a shipped roadmap entry
+- Muster: a Goblin Wiz could only take one of its four spells. The four spell
+  options in `goblins.json` carried `"group": "wiz-spell"`, which the app
+  correctly reads as choose-one — but the rulebook lists them semicolon-
+  separated as independently-priced upgrades ("Lightning Bolt (3) for +20 pts;
+  Bane Chant (2) for +20 pts; …"), and the Magic chapter is explicit that a
+  spellcaster may buy several spells. The one-per-Turn cap is on *casting*, not
+  buying. A data-authoring slip, not a code bug — the Elf Mage's spells were
+  already authored correctly with no group, which is what confirmed it
+  - `data/armies/kow/goblins.json`: removed `"group": "wiz-spell"` from the
+    Wiz's four spell options. No code change was needed for the fix itself —
+    the engine already handled independent options and additive costs. The
+    Giant's Club-or-Cleaver group is a genuine either/or and is untouched;
+    those were the only two groups in the whole dataset
+  - Saved armies needed no migration: a saved list holds option ids, never the
+    group name, so existing armies load unchanged and simply gain the ability
+    to add more spells
+- Duplicate-spell handling — a consequence of the above, since a Wiz can now
+  hold Hex from an upgrade *and* from the Trickster's Wand, paying twice for
+  one effect. Design decision: allow the selection and explain it, rather than
+  forbid it — a player may have a reason to hold both, and silently refusing a
+  legal purchase is worse than accounting for it
+  - `resolver.js`: a duplicate pass runs after all options and the artefact have
+    applied, so it sees the unit's final spell set. Redundant copies are dropped
+    from the effective spell list (the unit card shows one `Hex (2)`, which is
+    the truth) and each collision produces a plain-English message. Points are
+    deliberately *not* refunded — the player really did spend them, and quietly
+    adjusting the total would make it disagree with the list they built. Which
+    copy survives is deterministic (authored option order, then the artefact),
+    so the result never depends on click order
+  - Detection also covers spells printed on a profile as plain `special_rules`
+    strings (Grupp Longnail's "Hex (2)", the Green Lady's "Heal (4)"), matching
+    the exact spell name or the name followed by `" ("` — that trailing bracket
+    is what stops `Heal` matching an unrelated `Healing Aura (2)`. Only the
+    names actually being granted are searched for, so no master spell list is
+    needed
+  - `resolver.js`: `resolve()` returns a new `notices` array alongside the
+    existing `warnings`, kept deliberately separate — `warnings` are authoring
+    diagnostics phrased for whoever maintains the data and belong in the
+    console; `notices` are player-facing and safe to render. Merging them would
+    have leaked `Unknown option id "x" for unit "y" — ignored.` into a player's
+    options panel. The public `spells` shape stays exactly `{ spell, power }`
+    (an internal `_source` used for the messages is stripped before return), so
+    Battle's saved roster snapshots are unaffected and `battle.js` needed no
+    change at all
+  - `muster.js`: notices lead the unit's expand panel, above the options they
+    describe, with a ⚠ marker on the collapsed row so the condition survives
+    closing the panel. Purely derived — recomputed every render, so they appear
+    and disappear as options and artefacts toggle, with nothing stored,
+    invalidated or migrated. Nothing renders when there is nothing to say
+  - `style.css`: amber (not blood-red) notice block and row marker — the
+    selection is legal and was accepted, so this is advice, not an error
+  - `service-worker.js`: cache bumped `wbc-v27` → `wbc-v28` (`goblins.json`,
+    `resolver.js`, `muster.js`, `style.css` changed). Superseded by `wbc-v29`
+    above when the points-limit work followed; both ship together
+  - Verified against the real data: Lightning Bolt + Bane Chant resolves to
+    95 pts with both spells; all four spells plus the fleabag to 135; Hex
+    upgrade + Trickster's Wand yields one Hex and a notice; a near-miss
+    `Healing Aura (2)` correctly does *not* suppress `Hex`; the Giant's
+    either/or still behaves as one
+  - SPEC.md updated: the two-channel `warnings`/`notices` decision under
+    Architecture; a *Duplicate spells* subsection and a notices bullet in Muster
+    (§5.1); a `group` field-contract warning about when grouping is and is not
+    appropriate (the authoring trap behind this bug); a `grant_spell` note; a
+    localStorage-schema note that `spells` is already de-duplicated at snapshot
+    time; a shipped roadmap entry
+- `service-worker.js`: expanded the `CACHE_VERSION` comment. It said to bump the
+  version when "the file list or strategy changes" and did not mention file
+  *contents* — but same-origin requests are Cache-First with no revalidation, so
+  an edited `js/`, `css/` or `data/` file stays invisible until the version
+  changes. Forgetting it presents exactly as "the fix didn't work". Also
+  recorded in SPEC §3 under PWA & Offline Strategy
+- Known gap surfaced (not a code change): there is no service-worker update
+  prompt. `index.html` registers the worker but listens for neither
+  `updatefound` nor `controllerchange`, so a new version is adopted silently on
+  the *next* load rather than the current one. Harmless while deploying and
+  reloading as a single user; at the small-group phase it becomes "they are
+  playing off last week's points values and do not know it". Logged as SPEC §8
+  open question 9
 - Faction selection in Muster — the player now chooses a faction when creating
   an army, and Muster/Battle resolve each army against its own faction. Closes
   the "no faction picker" gap flagged in the Elves entry below (Elves data is

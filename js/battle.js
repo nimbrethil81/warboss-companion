@@ -9,7 +9,10 @@
  *   - Render contextual unit stat cards per phase, including fitted-option
  *     and equipped-artefact chips, and any added weapons/spells from
  *     selected options or the artefact
- *   - Manage per-unit "Routed" toggle in the roster
+ *   - Manage per-unit "Routed" and "Waver" toggles in the roster, and
+ *     the tap-to-expand full stat line / full rules text on unit cards
+ *   - Derive Wavering status from a stored phase ordinal rather than a
+ *     flag, so Prev Phase / Prev Turn and a resumed battle stay correct
  *   - Accept quick notes per turn
  *   - Handle game end: write summary to Sheets via sheets.js,
  *     then hand off to chronicle.js
@@ -62,6 +65,13 @@ var WBCBattle = (function () {
   /* The opponent's phase id — a single phase representing their full turn. */
   var OPP_PHASE = 'opponent_turn';
 
+  /* The last phase of your own half-turn. A Wavering marker lasts
+     "until the end of the unit's own next Turn", so this is the phase
+     it expires at the end of, whichever way round the game is being
+     played. Derived from YOUR_PHASES rather than named directly, so
+     the two cannot drift apart. */
+  var END_OF_YOUR_TURN_PHASE = YOUR_PHASES[YOUR_PHASES.length - 1];
+
   /* Full sequence for reference (used by _findPhase lookups only). */
   var PHASE_ORDER = YOUR_PHASES.concat([OPP_PHASE]);
 
@@ -98,6 +108,21 @@ var WBCBattle = (function () {
                       { key: 'ne',  label: 'Ne'  }]
   };
 
+  /* The full stat line, shown when a unit card is expanded. The stats
+     PHASE_STATS would have picked for the current phase are highlighted
+     within it, so the at-a-glance read survives the expansion. */
+  var ALL_STATS = [
+    { key: 'sp',  label: 'Sp'  },
+    { key: 'me',  label: 'Me'  },
+    { key: 'sh',  label: 'Sh'  },
+    { key: 'de',  label: 'De'  },
+    { key: 'att', label: 'Att' },
+    { key: 'ne',  label: 'Ne'  }
+  ];
+
+  /* State ids in kow.json's unit_states block. */
+  var STATE_WAVERING = 'wavering';
+
   /* ─── Module state ───────────────────────────────────────────────── */
 
   var _game     = null;   // Active game object (mirrors wbc_active_game)
@@ -107,6 +132,14 @@ var WBCBattle = (function () {
 
   var _noteDebounce    = null;   // setTimeout handle for debounced note auto-save
   var _lifecycleBound  = false;  // True once document-level save-on-hide listeners are bound
+
+  /* Which unit cards are currently expanded, keyed by inst_id.
+     Deliberately module-level only: this is ephemeral UI state, not game
+     state. It is never written to the game object or to localStorage, so
+     a reload or a resumed battle starts with every card collapsed. It IS
+     preserved across a Routed or Waver toggle (both redraw the roster) —
+     marking one unit must not slam every other open card shut. */
+  var _expanded = {};
 
   /* ─── Utility ────────────────────────────────────────────────────── */
 
@@ -167,6 +200,85 @@ var WBCBattle = (function () {
     return s;
   }
 
+  /* ─── Unit states (Wavering) ─────────────────────────────────────── */
+
+  /*
+   * Wavering is stored as WHEN it was marked, not as a boolean, and
+   * expiry is derived. Storing a flag and deleting it on phase change
+   * would be destructive: Prev Phase / Prev Turn would silently lose it,
+   * and a battle resumed mid-window could not know how far through the
+   * window it was.
+   *
+   * The marker is held as an absolute phase ordinal:
+   *
+   *   ordinal = (current_turn - 1) * roundLength
+   *           + index of current_phase within _roundSequence()
+   *
+   * The round sequence is fixed for the life of a game (it depends only
+   * on who went first), so ordinals are comparable across the whole game.
+   *
+   * Expiry: "Wavering until the end of its own next Turn" collapses, for
+   * both rulebook cases and either first-player ordering, to a single
+   * line — the marker is live up to and including the first
+   * end-of-your-turn phase at or after the moment of marking, and clears
+   * the instant you leave it.
+   */
+
+  /* Absolute phase ordinal for the current position in the game.
+     Returns null if there is no game, or the current phase is not in
+     the round sequence (Fail Gracefully — callers then do nothing). */
+  function _phaseOrdinal() {
+    if (!_game) return null;
+    var idx = _roundIndex();
+    if (idx < 0) return null;
+    return (_game.current_turn - 1) * _roundSequence().length + idx;
+  }
+
+  /* Is this unit instance Wavering right now?
+     The single read site for wavered_at — every caller (card render,
+     header count, toggle) goes through here rather than repeating
+     the arithmetic. */
+  function _isWavering(u) {
+    if (!u || u.wavered_at === null || u.wavered_at === undefined) return false;
+
+    var now = _phaseOrdinal();
+    if (now === null) return false;
+
+    var seq    = _roundSequence();
+    var len    = seq.length;
+    var endIdx = seq.indexOf(END_OF_YOUR_TURN_PHASE);
+    if (endIdx < 0) return false;
+
+    var markedTurn = Math.floor(u.wavered_at / len);
+    var markedIdx  = u.wavered_at % len;
+
+    var expiry = (markedIdx <= endIdx)
+      ? markedTurn * len + endIdx               /* still to come this round */
+      : (markedTurn + 1) * len + endIdx;        /* already passed — next round */
+
+    return now >= u.wavered_at && now <= expiry;
+  }
+
+  /* Units currently Wavering, excluding routed ones (a routed unit is
+     off the table, and its Waver control is hidden). */
+  function _waveringCount() {
+    var units = (_game && Array.isArray(_game.units)) ? _game.units : [];
+    return units.filter(function (u) {
+      return !u.routed && _isWavering(u);
+    }).length;
+  }
+
+  /* Look up a unit state's label / reminder text in kow.json.
+     Returns null if the unit_states block is absent — no fallback string
+     lives in this file, per the no-game-values-in-code rule. */
+  function _findUnitState(stateId) {
+    var states = (_config && _config.unit_states) || [];
+    for (var i = 0; i < states.length; i++) {
+      if (states[i].state_id === stateId) return states[i];
+    }
+    return null;
+  }
+
   /* ─── Persistence ────────────────────────────────────────────────── */
 
   function _saveGame() {
@@ -193,6 +305,7 @@ var WBCBattle = (function () {
     }
     _game     = null;
     _rendered = false;
+    _clearExpanded();
   }
 
   /* ─── Setup screen ───────────────────────────────────────────────── */
@@ -562,6 +675,12 @@ var WBCBattle = (function () {
     if (!page) return;
     if (!_game) { _renderSetup(); return; }
 
+    /* A full rebuild of the in-game UI — a fresh start, a resume, or a
+       return to the Battle tab — always begins with every card
+       collapsed. Expansion is ephemeral and deliberately not carried
+       across. */
+    _clearExpanded();
+
     var maxTurns = (_config && _config.max_turns) ? _config.max_turns : 7;
 
     /*
@@ -589,6 +708,11 @@ var WBCBattle = (function () {
       '      <button class="battle-player-btn" id="player-btn-opp"',
       '              data-player="opponent">Opp</button>',
       '    </div>',
+      /* Wavering tally — sits in the fixed header so the state is
+         visible without scrolling the roster. Empty (and hidden)
+         when nothing is Wavering; filled by _renderWaveringCount(). */
+      '    <span class="battle-wavering-count" id="battle-wavering-count"',
+      '          style="display:none;"></span>',
       '  </div>',
 
       /* Phase display */
@@ -664,10 +788,33 @@ var WBCBattle = (function () {
     _rendered = true;
     _updatePlayerToggleUI();
     _renderPhaseDisplay();
+    _renderWaveringCount();
     _renderPromptsBar();
     _renderRoster();
     _restoreNoteField();
     _bindGameEvents();
+  }
+
+  /* Wavering tally in the turn header. Derived from _isWavering() on
+     every call — there is no separate counter to fall out of step.
+     Renders nothing at all at zero: no placeholder, no "0". */
+  function _renderWaveringCount() {
+    var el = _el('battle-wavering-count');
+    if (!el) return;
+
+    /* No label available means the unit_states block never loaded — a
+       bare number here would say nothing, so show nothing. */
+    var state = _findUnitState(STATE_WAVERING);
+    var n     = _waveringCount();
+
+    if (n === 0 || !state || !state.label) {
+      el.textContent   = '';
+      el.style.display = 'none';
+      return;
+    }
+
+    el.textContent   = n + ' ' + state.label;
+    el.style.display = '';
   }
 
   /* ─── Phase / turn display ───────────────────────────────────────── */
@@ -749,6 +896,23 @@ var WBCBattle = (function () {
         if (expPanel) expPanel.style.display = isExp ? 'none' : 'block';
       });
     }
+
+    /* Per-prompt expand — bound here, where the cards are built, and
+       scoped to this bar. It used to be bound in _renderRoster(), which
+       re-runs far more often than the bar is rebuilt and so stacked a
+       fresh listener on the same header every time; an even number of
+       them cancelled out and the prompt stopped opening. */
+    _qsa('.prompt-card-header', bar).forEach(function (hdr) {
+      hdr.addEventListener('click', function () {
+        var idx    = this.getAttribute('data-pidx');
+        var detail = _el('pdetail-' + idx);
+        var tog    = _el('ptoggle-' + idx);
+        if (!detail) return;
+        var vis = detail.style.display !== 'none';
+        detail.style.display = vis ? 'none' : 'block';
+        if (tog) tog.textContent = vis ? '+' : '−';
+      });
+    });
   }
 
   function _buildPromptsExpandedHTML(prompts) {
@@ -805,37 +969,31 @@ var WBCBattle = (function () {
 
     container.innerHTML = html;
 
-    /* Bind Routed / Restore buttons */
+    /* Bind Routed / Restore buttons.
+       stopPropagation keeps the tap off the card-expansion handler
+       below — Routed must not also open or close the card. */
     _qsa('.unit-routed-btn', container).forEach(function (btn) {
-      btn.addEventListener('click', function () {
+      btn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
         _toggleRouted(this.getAttribute('data-inst-id'));
       });
     });
 
-    /* Bind special rules expand/collapse */
-    _qsa('.unit-rules-row', container).forEach(function (row) {
-      row.addEventListener('click', function () {
-        var instId = this.getAttribute('data-inst-id');
-        var text  = _el('urules-text-' + instId);
-        var arrow = _el('urules-arrow-' + instId);
-        if (!text) return;
-        var isExp = this.getAttribute('data-expanded') === 'true';
-        this.setAttribute('data-expanded', isExp ? 'false' : 'true');
-        text.classList.toggle('unit-rules-text--expanded', !isExp);
-        if (arrow) arrow.textContent = isExp ? '›' : '‹';
+    /* Bind Waver buttons — same stopPropagation reasoning as Routed. */
+    _qsa('.unit-waver-btn', container).forEach(function (btn) {
+      btn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        _toggleWavering(this.getAttribute('data-inst-id'));
       });
     });
 
-    /* Bind prompt card expand inside prompts panel */
-    _qsa('.prompt-card-header').forEach(function (hdr) {
-      hdr.addEventListener('click', function () {
-        var idx    = this.getAttribute('data-pidx');
-        var detail = _el('pdetail-' + idx);
-        var tog    = _el('ptoggle-' + idx);
-        if (!detail) return;
-        var vis = detail.style.display !== 'none';
-        detail.style.display = vis ? 'none' : 'block';
-        if (tog) tog.textContent = vis ? '+' : '−';
+    /* Bind card expansion. The whole card is the tap target — name
+       block, stat row, extras and rules row — except the two buttons
+       above. One expansion reveals the full stat line and the
+       untruncated rules together; there is no separate rules toggle. */
+    _qsa('.unit-card', container).forEach(function (card) {
+      card.addEventListener('click', function () {
+        _toggleExpanded(this.getAttribute('data-inst-id'));
       });
     });
   }
@@ -845,6 +1003,13 @@ var WBCBattle = (function () {
     var label     = _escapeHtml(u.name);
     var sizeLine  = _escapeHtml((u.size || '') + (u.type ? ' · ' + u.type : ''));
     var instId    = u.inst_id;
+    var isExp     = _expanded[instId] === true;
+
+    /* Routed wins visually over every other state: a routed unit is off
+       the table, so it carries no Wavering badge, no reminder line and
+       no Waver button. */
+    var isWav      = !isRouted && _isWavering(u);
+    var wavState   = _findUnitState(STATE_WAVERING);
 
     /* Fitted-option and artefact chips — only present on instances resolved
        through Options/Artefacts Consumption; absent on pre-existing/legacy
@@ -855,15 +1020,30 @@ var WBCBattle = (function () {
     if (u.artefact_label) {
       chips.push('<span class="unit-option-chip unit-artefact-chip">' + _escapeHtml(u.artefact_label) + '</span>');
     }
+    /* Wavering badge leads the chip row — it is a live state, not a
+       build-time property. Label comes from kow.json; if the block is
+       missing the badge is simply not drawn. */
+    if (isWav && wavState && wavState.label) {
+      chips.unshift('<span class="unit-option-chip unit-wavering-chip">'
+        + _escapeHtml(wavState.label) + '</span>');
+    }
     var chipsHTML = chips.length > 0
       ? '<div class="unit-card-chips">' + chips.join('') + '</div>'
       : '';
 
-    /* Contextual stats for the current phase */
-    var statDefs  = PHASE_STATS[_game.current_phase] || [];
+    /* Stat row. Collapsed shows only the stats that matter this phase;
+       expanded shows all six, with those same phase stats highlighted
+       and the rest muted. */
+    var phaseKeys = (PHASE_STATS[_game.current_phase] || []).map(function (def) {
+      return def.key;
+    });
+    var statDefs  = isExp ? ALL_STATS : (PHASE_STATS[_game.current_phase] || []);
     var statsHTML = statDefs.map(function (def) {
+      var isKey = phaseKeys.indexOf(def.key) !== -1;
       return [
-        '<div class="unit-stat-cell">',
+        '<div class="unit-stat-cell'
+          + (isExp ? (isKey ? ' unit-stat-cell--key' : ' unit-stat-cell--muted') : '')
+          + '">',
         '  <span class="unit-stat-label">' + def.label + '</span>',
         '  <span class="unit-stat-value">'
           + _fmtStat(def.key, u[def.key]) + '</span>',
@@ -890,22 +1070,42 @@ var WBCBattle = (function () {
         }).join('') + '</div>'
       : '';
 
-    /* Special rules — truncated by CSS, expands on tap.
+    /* Wavering reminder — one line, always visible on a wavering card
+       (not only when expanded, and not phase-dependent). Text lives in
+       kow.json; no fallback string here, so a missing unit_states block
+       renders nothing. */
+    var wavReminder = (isWav && wavState && wavState.reminder)
+      ? '<div class="unit-wavering-note">' + _escapeHtml(wavState.reminder) + '</div>'
+      : '';
+
+    /* Special rules — truncated to one line while the card is collapsed,
+       wrapped in full while it is expanded. Not tappable in its own
+       right: the whole card is the tap target.
        Keyed by inst_id (not unit_id) so duplicate units in the roster
-       (e.g. 6x Goblin Rabble) each get their own expand state and DOM id. */
+       (e.g. 6x Goblin Rabble) each get their own DOM id. */
     var rules     = (u.special_rules || []).join(', ') || '—';
     var rulesHTML = [
-      '<div class="unit-rules-row" data-inst-id="' + instId + '" data-expanded="false">',
+      '<div class="unit-rules-row">',
       '  <span class="unit-rules-label">Rules</span>',
       '  <span class="unit-rules-text" id="urules-text-' + instId + '">',
       _escapeHtml(rules),
       '  </span>',
-      '  <span class="unit-rules-arrow" id="urules-arrow-' + instId + '">›</span>',
       '</div>',
     ].join('');
 
+    /* Waver toggle sits immediately left of Routed, and is dropped
+       entirely on a routed card. */
+    var waverHTML = isRouted ? '' : [
+      '    <button class="unit-waver-btn'
+        + (isWav ? ' unit-waver-btn--on' : '') + '"',
+      '            data-inst-id="' + instId + '">Waver</button>',
+    ].join('');
+
     return [
-      '<div class="unit-card' + (isRouted ? ' unit-card--routed' : '') + '"',
+      '<div class="unit-card'
+        + (isRouted ? ' unit-card--routed' : '')
+        + (isWav ? ' unit-card--wavering' : '')
+        + (isExp ? ' unit-card--expanded' : '') + '"',
       '     data-inst-id="' + instId + '">',
 
       '  <div class="unit-card-top">',
@@ -914,13 +1114,17 @@ var WBCBattle = (function () {
       '      <div class="unit-card-size">' + sizeLine + '</div>',
       chipsHTML,
       '    </div>',
+      waverHTML,
       '    <button class="unit-routed-btn" data-inst-id="' + instId + '">',
       isRouted ? 'Restore' : 'Routed',
       '    </button>',
       '  </div>',
 
+      wavReminder,
+
       statsHTML
-        ? '<div class="unit-card-stats">' + statsHTML + '</div>'
+        ? '<div class="unit-card-stats'
+          + (isExp ? ' unit-card-stats--full' : '') + '">' + statsHTML + '</div>'
         : '',
 
       weaponsHTML,
@@ -944,6 +1148,60 @@ var WBCBattle = (function () {
     });
     _saveGame();
     _renderRoster();
+    _renderWaveringCount();
+  }
+
+  /*
+   * Toggles the Wavering marker on ONE unit instance.
+   *
+   * Asymmetric by design: it reads whether the unit is wavering RIGHT
+   * NOW (_isWavering), not merely whether wavered_at exists. A unit
+   * whose window has already expired shows an untapped button, and
+   * tapping it starts a fresh window from the current phase.
+   *
+   * Clearing deletes the field rather than zeroing it — same convention
+   * as weapons/spells/option_labels, which keeps legacy game snapshots
+   * working with no migration.
+   */
+  function _toggleWavering(instId) {
+    if (!_game || !Array.isArray(_game.units)) return;
+
+    var ordinal = _phaseOrdinal();
+    if (ordinal === null) return;
+
+    _game.units = _game.units.map(function (u) {
+      if (u.inst_id !== instId) return u;
+      var next = Object.assign({}, u);
+      if (_isWavering(u)) {
+        delete next.wavered_at;          /* manual clear — Headstrong, or a mis-tap */
+      } else {
+        next.wavered_at = ordinal;
+      }
+      return next;
+    });
+
+    _saveGame();
+    _renderRoster();
+    _renderWaveringCount();
+  }
+
+  /* ─── Card expansion ─────────────────────────────────────────────── */
+
+  function _toggleExpanded(instId) {
+    if (!instId) return;
+    if (_expanded[instId]) {
+      delete _expanded[instId];
+    } else {
+      _expanded[instId] = true;
+    }
+    _renderRoster();
+  }
+
+  /* Every card closes when the phase or turn changes — the expansion
+     answers a question about the phase you are in, so it should not
+     survive into the next one. */
+  function _clearExpanded() {
+    _expanded = {};
   }
 
   /* ─── Phase / Turn navigation ────────────────────────────────────── */
@@ -985,6 +1243,7 @@ var WBCBattle = (function () {
       _game.current_phase = seq[0];
     }
 
+    _clearExpanded();
     _saveGame();
     _refreshGameUI();
   }
@@ -1003,6 +1262,7 @@ var WBCBattle = (function () {
       _game.current_phase = seq[seq.length - 1];
     }
 
+    _clearExpanded();
     _saveGame();
     _refreshGameUI();
   }
@@ -1037,6 +1297,7 @@ var WBCBattle = (function () {
       _game.current_phase = seq[0];
     }
 
+    _clearExpanded();
     _saveGame();
     _refreshGameUI();
   }
@@ -1060,6 +1321,7 @@ var WBCBattle = (function () {
       _game.current_phase = seq[0];
     }
 
+    _clearExpanded();
     _saveGame();
     _refreshGameUI();
   }
@@ -1070,6 +1332,7 @@ var WBCBattle = (function () {
 
     _updatePlayerToggleUI();
     _renderPhaseDisplay();
+    _renderWaveringCount();
     _renderPromptsBar();
     _renderRoster();
     _restoreNoteField();

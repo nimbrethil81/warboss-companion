@@ -219,6 +219,14 @@
       "body": "While carrying a Loot Counter, a unit's Speed is reduced to 5 (unless it is already less than 5). A unit with a Loot Counter cannot be moved by Wind Blast, Enthral, or Surge spells. A unit must drop its Loot Counter at the start of a Withdraw! order. Individuals cannot pick up or carry Loot Counters."
     }
   ],
+  "unit_states": [
+    {
+      "state_id": "wavering",
+      "label": "Wavering",
+      "reminder": "Halt!, Change Facing! or Back! only · No ranged attacks.",
+      "source": "Rulebook — Nerve, Effects of a failed test"
+    }
+  ],
   "artefact_rules": {
     "max_per_unit": 1,
     "unique_per_army": true,

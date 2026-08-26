@@ -57,9 +57,14 @@ them fetchable from the repo):
   `CHANGELOG.md`, Claude always stops, states exactly what should change, and
   waits for your go-ahead. This is a standing rule, not a per-run choice.
 
-Everything outside these gates runs straight through. Note that Claude can't
-push to the repo, so "integrate" and "bump the cache" are produced as a
-finished file plus instructions for you to apply — not actions Claude performs.
+Everything outside these gates runs straight through.
+
+**This workflow runs in a Claude chat, not in Claude Code.** It depends on the
+rulebook and FAQ, which are copyrighted and deliberately not in the repo (see
+*Game rules* in `CLAUDE.md`) — so it has to run where those files legitimately
+are. Claude therefore cannot push to the repo during this workflow: "integrate"
+and "bump the cache" are produced as a finished file plus instructions for you
+to apply, not actions Claude performs.
 
 ---
 
@@ -239,7 +244,7 @@ Three checks, all easy to miss reading top-to-bottom:
   `questions` array. A bare array is only appropriate for a small batch you're
   comfortable hand-merging; a "ready" deliverable is the whole file.
 - New questions appended under the existing `questions` array at the exact
-  anchor point (per Precise Code Placement), not "somewhere in the file".
+  anchor point — name the line they follow, never "somewhere in the file".
 - No duplication of the category definitions — they stay in the header;
   questions only reference the id.
 
