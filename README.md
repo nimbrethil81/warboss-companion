@@ -25,26 +25,25 @@ Capture what worked, what didn't, and the one thing to try differently next time
 Built as a progressive web app — no install required, works in any browser.
 Currently supporting Kings of War v4. Free to use.
 
-## Live App
+## Apps
+
 Live: https://nimbrethil81.github.io/warboss-companion/
 
-Development: https://nimbrethil81.github.io/warboss-companion-dev/
+Development preview: https://warboss-companion-dev.nimbrethil81.workers.dev/
+
+The development source repository is private. The live GitHub repository contains only the explicitly approved public files required for the app and this public project information.
 
 ## Current Features
 - under development
 
 ## Tech Stack
-PWA / Vanilla JS / Google Sheets API / GitHub Pages
+PWA / Vanilla JS / Google Sheets via Apps Script / Cloudflare Workers Static Assets (development) / GitHub Pages (live)
 
 ## Development Process
-Solo, iterative, AI-assisted.
-See SPEC.md for full detail.
+Solo, iterative, AI-assisted. Detailed specifications, internal workflows and source-only reference material are maintained in the private development repository and are not published with the live app.
 
 ## Roadmap
-- Battle mode 
-- Chronicle (defrief)
-- Muster (army list)
-- Full roadmap lives in SPEC.md.
+Active roadmap and design decisions are maintained in the private development specification.
 
 ## Changelog
-See CHANGELOG.md for full history.
+See CHANGELOG.md for release history.

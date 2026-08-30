@@ -19,7 +19,22 @@ numbering starts at 0.4.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- Development hosting/privacy boundary hardened:
+  - `warboss-companion-dev` is now private; its public development preview is deployed
+    by Cloudflare Workers Static Assets at `warboss-companion-dev.nimbrethil81.workers.dev`
+  - `.assetsignore` is default-deny and publishes only the explicitly approved 29-file
+    public asset set
+  - `.github/workflows/deploy-to-live.yml` now uses a separate default-deny `rsync`
+    allow-list, so new dev-repo files do not enter the public live repo automatically
+  - public boundary was tested before and after the private-repo conversion, including a
+    fresh private test file that remained 404 on the Cloudflare Worker
+- Project documentation updated for the private-dev / Cloudflare-preview / public-live
+  architecture: `README.md`, `CLAUDE.md`, `SPEC.md`, `docs/GIT_WORKFLOW.md`, and
+  `apps-script/README.md`.
+- `apps-script/Code.gs` is explicitly documented as private dev-only reference source,
+  excluded from both public allow-lists. `CODE_VERSION` bumped to `2026-08-30a` for the
+  repo-copy update; application logic is unchanged.
 
 ## [0.4] - 2026-08-27
 
