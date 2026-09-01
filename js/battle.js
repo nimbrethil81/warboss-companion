@@ -917,8 +917,8 @@ var WBCBattle = (function () {
 
   function _buildPromptsExpandedHTML(prompts) {
     var sorted = prompts.slice().sort(function (a, b) {
-      var ord = { high: 0, medium: 1, low: 2 };
-      return (ord[a.priority] || 1) - (ord[b.priority] || 1);
+      var ord = { high: 1, medium: 2, low: 3 };
+      return (ord[a.priority] || 2) - (ord[b.priority] || 2);
     });
 
     return sorted.map(function (p, idx) {

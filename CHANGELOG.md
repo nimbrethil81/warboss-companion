@@ -17,6 +17,7 @@ Releases up to 0.3.6 used three-part numbers and are left as they were; two-part
 
 ### Fixed
 - Preserved Battle and Chronicle data across every failed Apps Script write, with reliable idempotent Retry behavior and one reflection row per game key.
+- Sorted expanded Battle prompt cards by priority so high-priority reminders always precede medium-priority reminders.
 
 ### Changed
 - Hardened the development-to-live publication boundary with a private development repository and separate default-deny allow-lists for Cloudflare preview and live deployment.
