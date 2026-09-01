@@ -68,8 +68,9 @@ var WBCChronicle = (function () {
 
   /* ─── Module state ───────────────────────────────────────────────── */
 
-  var _pendingGame   = null;   // Game payload handed over from battle.js
-  var _currentPrompt = '';     // The prompt shown on the current log screen
+  var _pendingGame       = null; // Game payload handed over from battle.js
+  var _pendingReflection = null; // Stable identity and draft retained for Retry
+  var _currentPrompt     = '';   // The prompt shown on the current log screen
 
   /* ─── Utility ────────────────────────────────────────────────────── */
 
@@ -79,14 +80,6 @@ var WBCChronicle = (function () {
 
   function _qsa(selector, root) {
     return Array.prototype.slice.call((root || document).querySelectorAll(selector));
-  }
-
-  function _uuid() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-      var r = (Math.random() * 16) | 0;
-      var v = c === 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
   }
 
   function _isoNow() { return new Date().toISOString(); }
@@ -133,7 +126,17 @@ var WBCChronicle = (function () {
    * Stores the pending game and renders the log form.
    */
   function startLog(gamePayload) {
-    _pendingGame   = gamePayload;
+    _pendingGame = gamePayload;
+    _pendingReflection = {
+      // A game has at most one reflection, so its existing UUID is also the
+      // stable reflection identity across saves, retries, and later upserts.
+      reflection_id: gamePayload.game_id,
+      game_id:       gamePayload.game_id,
+      what_worked:   '',
+      what_didnt:    '',
+      next_time:     '',
+      created_at:    _isoNow()
+    };
     _currentPrompt = _randomPrompt();
     _renderLogForm();
   }
@@ -160,21 +163,27 @@ var WBCChronicle = (function () {
       '  <label class="setup-label" for="chronicle-worked">What worked?</label>',
       '  <textarea id="chronicle-worked" class="chronicle-textarea"',
       '            rows="3" placeholder="Units, tactics, decisions that paid off…"',
-      '            maxlength="1000"></textarea>',
+      '            maxlength="1000">' + _escapeHtml(
+        _pendingReflection ? _pendingReflection.what_worked : ''
+      ) + '</textarea>',
       '</div>',
 
       '<div class="chronicle-field">',
       '  <label class="setup-label" for="chronicle-didnt">What didn\'t?</label>',
       '  <textarea id="chronicle-didnt" class="chronicle-textarea"',
       '            rows="3" placeholder="Mistakes, bad luck, things to avoid…"',
-      '            maxlength="1000"></textarea>',
+      '            maxlength="1000">' + _escapeHtml(
+        _pendingReflection ? _pendingReflection.what_didnt : ''
+      ) + '</textarea>',
       '</div>',
 
       '<div class="chronicle-field">',
       '  <label class="setup-label" for="chronicle-next">One thing to try next time</label>',
       '  <textarea id="chronicle-next" class="chronicle-textarea"',
       '            rows="2" placeholder="Keep it specific and actionable…"',
-      '            maxlength="500"></textarea>',
+      '            maxlength="500">' + _escapeHtml(
+        _pendingReflection ? _pendingReflection.next_time : ''
+      ) + '</textarea>',
       '</div>',
 
       '<div class="chronicle-log-actions">',
@@ -210,6 +219,7 @@ var WBCChronicle = (function () {
     if (skipBtn) {
       skipBtn.addEventListener('click', function () {
         _pendingGame = null;
+        _pendingReflection = null;
         _renderBrowser();
       });
     }
@@ -238,24 +248,29 @@ var WBCChronicle = (function () {
     var whatDidnt  = didntEl  ? didntEl.value.trim()  : '';
     var nextTime   = nextEl   ? nextEl.value.trim()   : '';
 
+    var gameId = _pendingGame ? _pendingGame.game_id : '';
     var payload = {
-      reflection_id: _uuid(),
-      game_id:       _pendingGame ? _pendingGame.game_id : '',
+      reflection_id: gameId,
+      game_id:       gameId,
       what_worked:   whatWorked,
       what_didnt:    whatDidnt,
       next_time:     nextTime,
-      created_at:    _isoNow()
+      created_at:    _pendingReflection && _pendingReflection.created_at
+        ? _pendingReflection.created_at
+        : _isoNow()
     };
+    _pendingReflection = payload;
 
     if (statusEl) statusEl.style.display = 'block';
     if (saveBtn)  saveBtn.disabled = true;
 
-    WBCSheets.saveReflection(payload).then(function (ok) {
+    WBCSheets.saveReflection(payload).then(function (saveResult) {
       if (statusEl) statusEl.style.display = 'none';
       if (saveBtn)  saveBtn.disabled = false;
 
-      if (ok) {
+      if (saveResult.success) {
         _pendingGame = null;
+        _pendingReflection = null;
         _appendReflectionToCache(payload);
         _renderBrowser();
       } else {

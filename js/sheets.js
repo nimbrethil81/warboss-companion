@@ -72,7 +72,8 @@ window.WBCSheets = (() => {
    *
    * @param {Object} payload
    * @returns {Promise<Object>} — parsed JSON response body
-   * @throws {Error} on network failure, timeout, or non-OK HTTP status
+   * @throws {Error} on network failure, timeout, non-OK HTTP status,
+   *   or an Apps Script response with success: false
    */
   async function post(payload) {
     const response = await fetchWithTimeout(SHEET_URL, {
@@ -85,7 +86,15 @@ window.WBCSheets = (() => {
       throw new Error(`Sheets POST failed: HTTP ${response.status}`);
     }
 
-    return response.json();
+    const result = await response.json();
+
+    // Apps Script reports handled write failures as HTTP 200 JSON so the
+    // response body, not the HTTP status alone, determines success.
+    if (result && result.success === false) {
+      throw new Error(result.error || 'Sheets POST failed');
+    }
+
+    return result;
   }
 
   /**
@@ -239,7 +248,9 @@ window.WBCSheets = (() => {
    */
   async function saveGame(game) {
     try {
-      await post({ action: 'insert', tab: TABS.GAMES, record: game });
+      // game_id is stable across retries. Upsert makes the write idempotent
+      // if Apps Script committed it but the browser never received the reply.
+      await post({ action: 'upsert', tab: TABS.GAMES, record: game });
       return { success: true, error: null };
     } catch (err) {
       console.error('[Sheets] saveGame failed:', err);

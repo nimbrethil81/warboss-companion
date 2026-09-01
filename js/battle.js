@@ -1464,10 +1464,10 @@ var WBCBattle = (function () {
 
     if (statusEl) statusEl.style.display = 'block';
 
-    WBCSheets.saveGame(gamePayload).then(function (ok) {
+    WBCSheets.saveGame(gamePayload).then(function (saveResult) {
       if (statusEl) statusEl.style.display = 'none';
 
-      if (ok) {
+      if (saveResult.success) {
         _clearGame();
         if (window.WBCChronicle &&
             typeof window.WBCChronicle.startLog === 'function') {
@@ -1484,11 +1484,11 @@ var WBCBattle = (function () {
         }
         if (retryBtn) {
           retryBtn.style.display = 'block';
-          retryBtn.addEventListener('click', function () {
+          retryBtn.onclick = function () {
             if (errEl) errEl.style.display = 'none';
             retryBtn.style.display = 'none';
             _completeGame(result);
-          });
+          };
         }
       }
     }).catch(function (e) {
@@ -1501,11 +1501,11 @@ var WBCBattle = (function () {
       }
       if (retryBtn) {
         retryBtn.style.display = 'block';
-        retryBtn.addEventListener('click', function () {
+        retryBtn.onclick = function () {
           if (errEl) errEl.style.display = 'none';
           retryBtn.style.display = 'none';
           _completeGame(result);
-        });
+        };
       }
     });
   }
